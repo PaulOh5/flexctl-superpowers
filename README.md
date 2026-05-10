@@ -8,12 +8,17 @@
 
 ### 처음 한 번
 
-    docker compose up -d postgres
+    docker compose up -d postgres headscale
     make migrate-up
+    make headscale-init
 
 ### 빌드/실행
 
-    FLEX_SESSION_SECRET=dev-secret-min-32-bytes-1234567890ab make run
+`make headscale-init`이 마지막에 출력한 API key를 환경변수로 주입:
+
+    FLEX_SESSION_SECRET=dev-secret-min-32-bytes-1234567890ab \
+    FLEX_HEADSCALE_API_KEY="<paste-key-here>" \
+    make run
 
 ### 테스트
 
@@ -28,6 +33,8 @@ testcontainers가 임시 Postgres를 띄우므로 docker daemon이 필요.
 | `FLEX_ADDR` | `:8080` | HTTP 리스닝 주소 |
 | `FLEX_DB_DSN` | `postgres://flex:flex@localhost:5432/flex?sslmode=disable` | Postgres 연결 |
 | `FLEX_SESSION_SECRET` | (필수) | HMAC 키, 32바이트 이상 |
+| `FLEX_HEADSCALE_URL` | `http://localhost:8088` | Headscale API endpoint (compose 기본값) |
+| `FLEX_HEADSCALE_API_KEY` | (필수) | Headscale API 토큰, `make headscale-init`로 생성 |
 
 ## 현재 노출된 엔드포인트
 
