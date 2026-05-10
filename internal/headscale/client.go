@@ -3,6 +3,7 @@ package headscale
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,11 @@ func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
 	}
 }
 
+var (
+	ErrUserAlreadyExists = errors.New("headscale user already exists")
+	ErrUserNotFound      = errors.New("headscale user not found")
+)
+
 type User struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -40,6 +46,45 @@ func (c *Client) ListUsers(ctx context.Context) ([]User, error) {
 		return nil, err
 	}
 	return out.Users, nil
+}
+
+type createUserReq struct {
+	Name string `json:"name"`
+}
+
+type userResp struct {
+	User User `json:"user"`
+}
+
+func (c *Client) CreateUser(ctx context.Context, name string) (User, error) {
+	var out userResp
+	err := c.do(ctx, http.MethodPost, "/api/v1/user", createUserReq{Name: name}, &out)
+	if err != nil {
+		if isHeadscaleStatusError(err, http.StatusBadRequest) ||
+			isHeadscaleStatusError(err, http.StatusConflict) ||
+			strings.Contains(err.Error(), "already exists") {
+			return User{}, ErrUserAlreadyExists
+		}
+		return User{}, err
+	}
+	return out.User, nil
+}
+
+func (c *Client) DeleteUser(ctx context.Context, name string) error {
+	err := c.do(ctx, http.MethodDelete, "/api/v1/user/"+name, nil, nil)
+	if err != nil {
+		if isHeadscaleStatusError(err, http.StatusNotFound) ||
+			strings.Contains(err.Error(), "not found") {
+			return ErrUserNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func isHeadscaleStatusError(err error, status int) bool {
+	prefix := fmt.Sprintf(": %d ", status)
+	return err != nil && strings.Contains(err.Error(), prefix)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in any, out any) error {
