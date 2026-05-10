@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/paul/flexctl/internal/auth"
 	"github.com/paul/flexctl/internal/db"
+	"github.com/paul/flexctl/internal/sshkeys"
 	"github.com/paul/flexctl/internal/users"
 )
 
@@ -58,6 +59,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
 		usersH.MountAuthed(r)
+		sshkeys.NewHandlers(sshkeys.NewService(pool)).Mount(r)
 	})
 
 	r.Get("/v1/health", func(w http.ResponseWriter, req *http.Request) {
