@@ -3,8 +3,13 @@
 DB_URL ?= postgres://flex:flex@localhost:5432/flex?sslmode=disable
 MIGRATE := go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate
 
-build:
+build: build-control-plane build-flexctl
+
+build-control-plane:
 	go build -o bin/control-plane ./cmd/control-plane
+
+build-flexctl:
+	go build -o bin/flexctl ./cmd/flexctl
 
 run:
 	go run ./cmd/control-plane
