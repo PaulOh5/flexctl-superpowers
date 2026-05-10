@@ -2,6 +2,7 @@ package policy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -60,6 +61,32 @@ func (p *Policy) Refresh(ctx context.Context) error {
 
 	if err := p.hs.SetPolicy(ctx, policyJSON); err != nil {
 		return fmt.Errorf("push policy: %w", err)
+	}
+	return nil
+}
+
+// Initialize ensures the 'control-plane' user exists in Headscale (the owner
+// of all tags in our ACLs). Safe to call repeatedly.
+func (p *Policy) Initialize(ctx context.Context) error {
+	if _, err := p.hs.CreateUser(ctx, "control-plane"); err != nil &&
+		!errors.Is(err, headscale.ErrUserAlreadyExists) {
+		return fmt.Errorf("create control-plane user: %w", err)
+	}
+	return p.Refresh(ctx)
+}
+
+// OnUserCreated is called by the signup handler immediately after a user row
+// is committed to the DB. It creates the matching Headscale user (idempotent)
+// and refreshes the ACL policy so the user's tags are recognized.
+//
+// On any error, callers should compensate by deleting the DB user row.
+func (p *Policy) OnUserCreated(ctx context.Context, slug string) error {
+	if _, err := p.hs.CreateUser(ctx, slug); err != nil &&
+		!errors.Is(err, headscale.ErrUserAlreadyExists) {
+		return fmt.Errorf("create headscale user %q: %w", slug, err)
+	}
+	if err := p.Refresh(ctx); err != nil {
+		return fmt.Errorf("refresh acl: %w", err)
 	}
 	return nil
 }

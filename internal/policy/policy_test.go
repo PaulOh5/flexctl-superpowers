@@ -208,3 +208,79 @@ func TestPolicyRefresh_AfterUserDeletion(t *testing.T) {
 	require.NotContains(t, got, "tag:env-paul")
 	require.Contains(t, got, "tag:device-alice")
 }
+
+func TestPolicyOnUserCreated(t *testing.T) {
+	pool := startPostgres(t)
+	baseURL, apiKey := startHeadscale(t)
+	hs := headscale.NewClient(baseURL, apiKey, 5*time.Second)
+
+	usersSvc := users.NewService(pool)
+	u, err := usersSvc.Signup(context.Background(), "p@example.com", "paul", "correct-horse-battery")
+	require.NoError(t, err)
+
+	p := policy.New(pool, hs)
+	require.NoError(t, p.OnUserCreated(context.Background(), u.Slug))
+
+	// Headscale user should exist
+	hsUsers, err := hs.ListUsers(context.Background())
+	require.NoError(t, err)
+	names := make([]string, 0, len(hsUsers))
+	for _, u := range hsUsers {
+		names = append(names, u.Name)
+	}
+	require.Contains(t, names, "paul")
+
+	// ACL should contain paul's tags
+	got, err := hs.GetPolicy(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, got, "tag:device-paul")
+}
+
+func TestPolicyOnUserCreated_DuplicateHeadscaleUserOK(t *testing.T) {
+	// If headscale already has the user (e.g. from a previous failed signup),
+	// OnUserCreated should still succeed — idempotent.
+	pool := startPostgres(t)
+	baseURL, apiKey := startHeadscale(t)
+	hs := headscale.NewClient(baseURL, apiKey, 5*time.Second)
+
+	_, err := hs.CreateUser(context.Background(), "paul")
+	require.NoError(t, err)
+
+	usersSvc := users.NewService(pool)
+	u, err := usersSvc.Signup(context.Background(), "p@example.com", "paul", "correct-horse-battery")
+	require.NoError(t, err)
+
+	p := policy.New(pool, hs)
+	require.NoError(t, p.OnUserCreated(context.Background(), u.Slug))
+}
+
+func TestPolicyInitialize_CreatesControlPlaneUser(t *testing.T) {
+	pool := startPostgres(t)
+	baseURL, apiKey := startHeadscale(t)
+
+	// startHeadscale already creates 'control-plane' user via Exec.
+	// To test Initialize on its own, delete it first then call Initialize.
+	hs := headscale.NewClient(baseURL, apiKey, 5*time.Second)
+	require.NoError(t, hs.DeleteUser(context.Background(), "control-plane"))
+
+	p := policy.New(pool, hs)
+	require.NoError(t, p.Initialize(context.Background()))
+
+	userList, err := hs.ListUsers(context.Background())
+	require.NoError(t, err)
+	names := make([]string, 0, len(userList))
+	for _, u := range userList {
+		names = append(names, u.Name)
+	}
+	require.Contains(t, names, "control-plane")
+}
+
+func TestPolicyInitialize_Idempotent(t *testing.T) {
+	pool := startPostgres(t)
+	baseURL, apiKey := startHeadscale(t)
+	hs := headscale.NewClient(baseURL, apiKey, 5*time.Second)
+
+	p := policy.New(pool, hs)
+	require.NoError(t, p.Initialize(context.Background()))
+	require.NoError(t, p.Initialize(context.Background()))
+}
