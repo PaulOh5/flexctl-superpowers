@@ -27,6 +27,30 @@ func (h *Handlers) Mount(r chi.Router) {
 	r.Post("/v1/auth/login", h.login)
 }
 
+func (h *Handlers) MountAuthed(r chi.Router) {
+	r.Get("/v1/me", h.me)
+}
+
+func (h *Handlers) me(w http.ResponseWriter, r *http.Request) {
+	uid, ok := auth.UserIDFrom(r.Context())
+	if !ok {
+		httperr.Write(w, http.StatusUnauthorized, "unauthenticated")
+		return
+	}
+	u, err := h.svc.ByID(r.Context(), uid)
+	if errors.Is(err, ErrNotFound) {
+		httperr.Write(w, http.StatusUnauthorized, "user gone")
+		return
+	}
+	if err != nil {
+		slog.Error("me lookup", "err", err)
+		httperr.Write(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(meResp{ID: u.ID.String(), Email: u.Email, Slug: u.Slug})
+}
+
 type signupReq struct {
 	Email    string `json:"email"`
 	Slug     string `json:"slug"`

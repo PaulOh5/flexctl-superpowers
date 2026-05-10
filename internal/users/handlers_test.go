@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/require"
@@ -124,6 +125,56 @@ func TestLoginHandler_UnknownEmailReturns401(t *testing.T) {
 		"email": "nobody@example.com", "password": "correct-horse-battery",
 	})
 	resp, err := http.Post(srv.URL+"/v1/auth/login", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func timeNowPlusHour() time.Time { return time.Now().Add(time.Hour) }
+
+func TestMeHandler_HappyPath(t *testing.T) {
+	pool := newTestPool(t)
+	svc := users.NewService(pool)
+	u, err := svc.Signup(context.Background(), "p@example.com", "paul", "correct-horse-battery")
+	require.NoError(t, err)
+
+	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
+	h := users.NewHandlers(svc, signer)
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(auth.RequireSession(signer))
+		h.MountAuthed(r)
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	token, _ := signer.Encode(auth.Session{UserID: u.ID, ExpiresAt: timeNowPlusHour()})
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/me", nil)
+	req.AddCookie(&http.Cookie{Name: "flex_session", Value: token})
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var got map[string]string
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Equal(t, "paul", got["slug"])
+}
+
+func TestMeHandler_NoCookie401(t *testing.T) {
+	pool := newTestPool(t)
+	svc := users.NewService(pool)
+	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
+	h := users.NewHandlers(svc, signer)
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(auth.RequireSession(signer))
+		h.MountAuthed(r)
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/v1/me")
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)

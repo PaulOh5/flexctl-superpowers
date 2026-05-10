@@ -55,6 +55,10 @@ func main() {
 	usersSvc := users.NewService(pool)
 	usersH := users.NewHandlers(usersSvc, signer)
 	usersH.Mount(r)
+	r.Group(func(r chi.Router) {
+		r.Use(auth.RequireSession(signer))
+		usersH.MountAuthed(r)
+	})
 
 	r.Get("/v1/health", func(w http.ResponseWriter, req *http.Request) {
 		ctx, cancel := context.WithTimeout(req.Context(), 1*time.Second)
