@@ -125,6 +125,19 @@ func (s *Service) ByID(ctx context.Context, id uuid.UUID) (User, error) {
 	return u, nil
 }
 
+// HardDelete removes the user row entirely. Used for compensation when a
+// post-signup hook fails, and for tests. Returns ErrNotFound if no row matched.
+func (s *Service) HardDelete(ctx context.Context, id uuid.UUID) error {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete user: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func isUniqueViolation(err error, constraint string) bool {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) {
