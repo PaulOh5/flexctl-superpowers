@@ -15,6 +15,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: false,
 	}
 	root.AddCommand(NewJoinCmd())
+	root.AddCommand(NewAgentCmd())
 	return root
 }
 
