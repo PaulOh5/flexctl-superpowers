@@ -120,13 +120,13 @@ func TestAgent_ReconnectsAfterServerRestart(t *testing.T) {
 	}
 	require.GreaterOrEqual(t, fs1.registers.Load(), int32(1))
 
-	// Stop server (force disconnect). Agent should keep retrying.
-	stop1()
-	// We can't easily reuse the same port. We just assert the agent is still
-	// alive trying — cancel its context and confirm clean shutdown.
-	time.Sleep(200 * time.Millisecond)
+	// Cancel agent first so its stream closes; this lets the server-side
+	// stream handler return, which in turn lets GracefulStop unblock.
 	cancel()
 	time.Sleep(200 * time.Millisecond)
+
+	// Now safe to GracefulStop — no live streams to drain.
+	stop1()
 	_ = fs1
 }
 

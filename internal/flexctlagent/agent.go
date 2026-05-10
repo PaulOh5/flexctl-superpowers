@@ -186,7 +186,11 @@ func nextBackoff(cur, max time.Duration) time.Duration {
 }
 
 func withJitter(d time.Duration) time.Duration {
-	// ±25% jitter
-	jitter := time.Duration(rand.Int64N(int64(d) / 2)) //nolint:gosec — non-crypto
-	return d/2 + jitter
+	// ±25% jitter: range [d*0.75, d*1.25).
+	quarter := int64(d) / 4
+	if quarter <= 0 {
+		return d
+	}
+	jitter := time.Duration(rand.Int64N(quarter*2) - quarter) //nolint:gosec — non-crypto
+	return d + jitter
 }
