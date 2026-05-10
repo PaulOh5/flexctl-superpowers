@@ -20,7 +20,7 @@ func TestSignupHandler_HappyPath(t *testing.T) {
 	pool := newTestPool(t)
 	svc := users.NewService(pool)
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer)
+	h := users.NewHandlers(svc, signer, pool)
 
 	r := chi.NewRouter()
 	h.Mount(r)
@@ -50,7 +50,7 @@ func TestSignupHandler_DuplicateReturns409(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer)
+	h := users.NewHandlers(svc, signer, pool)
 	r := chi.NewRouter()
 	h.Mount(r)
 	srv := httptest.NewServer(r)
@@ -72,7 +72,7 @@ func TestLoginHandler_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer)
+	h := users.NewHandlers(svc, signer, pool)
 	r := chi.NewRouter()
 	h.Mount(r)
 	srv := httptest.NewServer(r)
@@ -96,7 +96,7 @@ func TestLoginHandler_BadPasswordReturns401(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer)
+	h := users.NewHandlers(svc, signer, pool)
 	r := chi.NewRouter()
 	h.Mount(r)
 	srv := httptest.NewServer(r)
@@ -115,7 +115,7 @@ func TestLoginHandler_UnknownEmailReturns401(t *testing.T) {
 	pool := newTestPool(t)
 	svc := users.NewService(pool)
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer)
+	h := users.NewHandlers(svc, signer, pool)
 	r := chi.NewRouter()
 	h.Mount(r)
 	srv := httptest.NewServer(r)
@@ -139,7 +139,7 @@ func TestMeHandler_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer)
+	h := users.NewHandlers(svc, signer, pool)
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
@@ -165,7 +165,7 @@ func TestMeHandler_NoCookie401(t *testing.T) {
 	pool := newTestPool(t)
 	svc := users.NewService(pool)
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer)
+	h := users.NewHandlers(svc, signer, pool)
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
@@ -187,7 +187,7 @@ func TestLogoutHandler_ClearsCookie(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer)
+	h := users.NewHandlers(svc, signer, pool)
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))

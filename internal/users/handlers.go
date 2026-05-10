@@ -4,11 +4,14 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/paul/flexctl/internal/audit"
 	"github.com/paul/flexctl/internal/auth"
 	"github.com/paul/flexctl/internal/httperr"
 )
@@ -16,10 +19,11 @@ import (
 type Handlers struct {
 	svc    *Service
 	signer *auth.SessionSigner
+	pool   *pgxpool.Pool
 }
 
-func NewHandlers(svc *Service, signer *auth.SessionSigner) *Handlers {
-	return &Handlers{svc: svc, signer: signer}
+func NewHandlers(svc *Service, signer *auth.SessionSigner, pool *pgxpool.Pool) *Handlers {
+	return &Handlers{svc: svc, signer: signer, pool: pool}
 }
 
 func (h *Handlers) Mount(r chi.Router) {
@@ -77,6 +81,11 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) {
 	}
 	u, err := h.svc.Authenticate(r.Context(), req.Email, req.Password)
 	if errors.Is(err, ErrBadCredentials) {
+		_ = audit.Log(r.Context(), h.pool, audit.Event{
+			Action: "auth.login_failed",
+			Target: req.Email,
+			IP:     net.ParseIP(remoteIP(r)),
+		})
 		httperr.Write(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -86,6 +95,12 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	_ = audit.Log(r.Context(), h.pool, audit.Event{
+		UserID: &u.ID,
+		Action: "auth.login",
+		Target: u.Slug,
+		IP:     net.ParseIP(remoteIP(r)),
+	})
 	token, err := h.signer.Encode(auth.Session{
 		UserID:    u.ID,
 		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
@@ -109,6 +124,13 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) logout(w http.ResponseWriter, r *http.Request) {
+	if uid, ok := auth.UserIDFrom(r.Context()); ok {
+		_ = audit.Log(r.Context(), h.pool, audit.Event{
+			UserID: &uid,
+			Action: "auth.logout",
+			IP:     net.ParseIP(remoteIP(r)),
+		})
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "flex_session",
 		Value:    "",
@@ -159,6 +181,13 @@ func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusInternalServerError, "session encode")
 		return
 	}
+	_ = audit.Log(r.Context(), h.pool, audit.Event{
+		UserID:   &u.ID,
+		Action:   "user.signup",
+		Target:   u.Slug,
+		Metadata: map[string]any{"email": u.Email},
+		IP:       net.ParseIP(remoteIP(r)),
+	})
 	http.SetCookie(w, &http.Cookie{
 		Name:     "flex_session",
 		Value:    token,
@@ -171,4 +200,15 @@ func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(meResp{ID: u.ID.String(), Email: u.Email, Slug: u.Slug})
+}
+
+func remoteIP(r *http.Request) string {
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		return v
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
