@@ -1,0 +1,88 @@
+package users
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/paul/flexctl/internal/auth"
+	"github.com/paul/flexctl/internal/httperr"
+)
+
+type Handlers struct {
+	svc    *Service
+	signer *auth.SessionSigner
+}
+
+func NewHandlers(svc *Service, signer *auth.SessionSigner) *Handlers {
+	return &Handlers{svc: svc, signer: signer}
+}
+
+func (h *Handlers) Mount(r chi.Router) {
+	r.Post("/v1/auth/signup", h.signup)
+}
+
+type signupReq struct {
+	Email    string `json:"email"`
+	Slug     string `json:"slug"`
+	Password string `json:"password"`
+}
+
+type meResp struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Slug  string `json:"slug"`
+}
+
+func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {
+	var req signupReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	u, err := h.svc.Signup(r.Context(), req.Email, req.Slug, req.Password)
+	switch {
+	case errors.Is(err, ErrEmailTaken):
+		httperr.Write(w, http.StatusConflict, "email taken")
+		return
+	case errors.Is(err, ErrSlugTaken):
+		httperr.Write(w, http.StatusConflict, "slug taken")
+		return
+	case errors.Is(err, ErrInvalidEmail):
+		httperr.Write(w, http.StatusBadRequest, "invalid email")
+		return
+	case errors.Is(err, ErrInvalidSlug):
+		httperr.Write(w, http.StatusBadRequest, "invalid slug")
+		return
+	case errors.Is(err, ErrPasswordTooShort):
+		httperr.Write(w, http.StatusBadRequest, "password too short")
+		return
+	case err != nil:
+		httperr.Write(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	token, err := h.signer.Encode(auth.Session{
+		UserID:    u.ID,
+		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
+	})
+	if err != nil {
+		httperr.Write(w, http.StatusInternalServerError, "session encode")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "flex_session",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(30 * 24 * time.Hour),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(meResp{ID: u.ID.String(), Email: u.Email, Slug: u.Slug})
+}

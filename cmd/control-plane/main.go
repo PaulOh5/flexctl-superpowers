@@ -12,7 +12,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/paul/flexctl/internal/auth"
 	"github.com/paul/flexctl/internal/db"
+	"github.com/paul/flexctl/internal/users"
 )
 
 func main() {
@@ -42,6 +44,17 @@ func main() {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
+
+	secret := []byte(os.Getenv("FLEX_SESSION_SECRET"))
+	if len(secret) < 32 {
+		slog.Error("FLEX_SESSION_SECRET must be at least 32 bytes")
+		os.Exit(1)
+	}
+	signer := auth.NewSessionSigner(secret)
+
+	usersSvc := users.NewService(pool)
+	usersH := users.NewHandlers(usersSvc, signer)
+	usersH.Mount(r)
 
 	r.Get("/v1/health", func(w http.ResponseWriter, req *http.Request) {
 		ctx, cancel := context.WithTimeout(req.Context(), 1*time.Second)
