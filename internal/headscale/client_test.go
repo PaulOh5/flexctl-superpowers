@@ -75,3 +75,33 @@ func collectNames(users []headscale.User) []string {
 	}
 	return out
 }
+
+func TestSetAndGetPolicy(t *testing.T) {
+	baseURL, apiKey := startHeadscale(t)
+	c := headscale.NewClient(baseURL, apiKey, 5*time.Second)
+	ctx := context.Background()
+
+	want := `{
+  "tagOwners": {
+    "tag:device-paul": ["control-plane"],
+    "tag:env-paul":    ["control-plane"]
+  },
+  "acls": [
+    {"action":"accept","src":["tag:device-paul"],"dst":["tag:env-paul:22"]}
+  ]
+}`
+
+	require.NoError(t, c.SetPolicy(ctx, want))
+
+	got, err := c.GetPolicy(ctx)
+	require.NoError(t, err)
+	require.Contains(t, got, "tag:device-paul")
+	require.Contains(t, got, "tag:env-paul:22")
+}
+
+func TestSetPolicy_Invalid(t *testing.T) {
+	baseURL, apiKey := startHeadscale(t)
+	c := headscale.NewClient(baseURL, apiKey, 5*time.Second)
+	err := c.SetPolicy(context.Background(), `{"this is not valid hujson`)
+	require.Error(t, err, "headscale should reject malformed policy")
+}

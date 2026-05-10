@@ -87,6 +87,27 @@ func isHeadscaleStatusError(err error, status int) bool {
 	return err != nil && strings.Contains(err.Error(), prefix)
 }
 
+type policyReq struct {
+	Policy string `json:"policy"`
+}
+
+type policyResp struct {
+	Policy    string    `json:"policy"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func (c *Client) SetPolicy(ctx context.Context, hujson string) error {
+	return c.do(ctx, http.MethodPut, "/api/v1/policy", policyReq{Policy: hujson}, nil)
+}
+
+func (c *Client) GetPolicy(ctx context.Context) (string, error) {
+	var out policyResp
+	if err := c.do(ctx, http.MethodGet, "/api/v1/policy", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Policy, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in any, out any) error {
 	var body io.Reader
 	if in != nil {
