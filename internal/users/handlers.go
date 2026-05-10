@@ -3,6 +3,7 @@ package users
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -61,6 +62,7 @@ func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {
 		httperr.Write(w, http.StatusBadRequest, "password too short")
 		return
 	case err != nil:
+		slog.Error("signup internal", "err", err)
 		httperr.Write(w, http.StatusInternalServerError, "internal error")
 		return
 	}
@@ -70,6 +72,7 @@ func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
 	})
 	if err != nil {
+		slog.Error("signup session encode", "err", err)
 		httperr.Write(w, http.StatusInternalServerError, "session encode")
 		return
 	}
