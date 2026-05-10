@@ -52,6 +52,10 @@ type Service struct {
 
 func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
 
+// PoolFor returns the underlying pgx pool for test wiring. Production code
+// should call methods on Service directly.
+func PoolFor(s *Service) *pgxpool.Pool { return s.pool }
+
 func (s *Service) CreatePairToken(ctx context.Context, userID uuid.UUID) (string, error) {
 	raw := make([]byte, pairTokenBytes)
 	if _, err := rand.Read(raw); err != nil {
