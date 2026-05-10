@@ -21,7 +21,8 @@
 | Tailnet 경계 | 단일 tailnet, tag 기반 ACL로 사용자 격리 |
 | 이미지 카탈로그 | 운영자 큐레이션 템플릿 4–6종 |
 | 스택 | Go 풀스택 (백엔드 + flexctl), 웹은 React |
-| flexctl 형태 | 단일 Go 바이너리, 3가지 모드(`agent`/`init`/`client`) + tsnet 임베드 |
+| flexctl 형태 | 단일 Go 바이너리, 3가지 모드(`agent`/`sidecar`/`client`) + tsnet 임베드 |
+| 환경 토폴로지 | 환경 1개 = **사이드카 컨테이너(tailscaled+TUN, NET_ADMIN) + dev 컨테이너(unprivileged sshd)** 한 묶음, netns 공유 |
 | 사용자 인증 | 이메일+비밀번호 + 선택적 GitHub OAuth, Tailscale 계정 불필요 |
 
 ## 2. 시스템 개요와 컴포넌트
@@ -35,18 +36,22 @@
                     │  - Headscale (사이드 컨테이너)  │
                     └─────────────────────────────────┘
                           ▲                ▲
-                outbound  │                │ tsnet → Headscale
-              gRPC stream │                │
+                outbound  │                │
+              gRPC stream │                │ Headscale 가입 (tailscaled)
                           │                │
         ┌─────────────────┘                └────────────────┐
         │                                                    │
-┌───────────────────┐                              ┌─────────────────┐
-│  GPU 서버 (NAT 뒤)│                              │ 사용자 노트북   │
-│  flexctl agent    │                              │ flexctl client  │
-│  ├─ Docker daemon │                              │  + tsnet daemon │
-│  └─ 컨테이너들 ──→ tsnet → Headscale ←──── tsnet─┘                │
-│       (각자 노드) │                              │ ProxyCommand SSH│
-└───────────────────┘                              └─────────────────┘
+┌───────────────────────────────────────┐         ┌─────────────────┐
+│  GPU 서버 (NAT 뒤)                    │         │ 사용자 노트북   │
+│  flexctl agent                        │         │ flexctl client  │
+│  └─ Docker daemon                     │         │  + tsnet daemon │
+│      ├─ env-A 묶음                    │         │                 │
+│      │  ┌─ flex-net-A (사이드카)      │         │                 │
+│      │  │   tailscaled+TUN, NET_ADMIN ├──tailnet┤  ←── tsnet ──┐ │
+│      │  └─ flex-env-A (dev, sshd)     │         │              │ │
+│      │      ↑ netns 공유              │         │ ProxyCommand │ │
+│      └─ env-B 묶음 (동일 구조)        │         │     SSH      │ │
+└───────────────────────────────────────┘         └──────────────┴─┘
 ```
 
 ### 2.1 Control Plane
@@ -63,13 +68,25 @@
 - 노드 헬스/리소스(GPU 모델, VRAM, 가용 여부) 주기 보고.
 - agent 자체는 tailnet에 가입하지 않는다. tailnet 멤버는 컨테이너와 사용자 디바이스만.
 
-### 2.3 flexctl init (컨테이너 내부)
+### 2.3 환경 컨테이너 묶음 (사이드카 + dev)
 
-- 모든 큐레이션 베이스 이미지에 작은 Go 바이너리로 포함.
-- 컨테이너 부팅 시 ENV에서 pre-auth key, 호스트네임, 태그를 읽어 `tsnet`으로 Headscale 가입.
-- ENV로 주입된 사용자 SSH 공개키들을 `/home/dev/.ssh/authorized_keys`에 기록.
-- 별도 `sshd`를 띄워 `tsnet`이 노출한 가상 인터페이스에 바인드 → VS Code Remote-SSH/sftp/scp/포트포워딩 등 OpenSSH 전체 호환.
-- 컨테이너 종료 시 tsnet logout → ephemeral 노드는 Headscale에서 자동 정리.
+환경 1개는 두 개의 컨테이너가 한 묶음으로 동작한다. 격리 분리: 네트워킹은 사이드카가 담당(권한 보유), 개발 환경은 권한 없이 격리.
+
+**flex-net-\<env_id\> (사이드카, 운영자가 통제하는 슬림 이미지)**
+- 이미지: `ghcr.io/flex/sidecar:<version>` — Alpine + `tailscaled` + `flexctl sidecar` 바이너리.
+- 권한: `--cap-add=NET_ADMIN`, `--device=/dev/net/tun`. 그 외 capability는 모두 drop.
+- 부팅: `flexctl sidecar`가 ENV에서 pre-auth key/hostname/tag 읽어 `tailscaled`를 TUN 모드로 기동, `tailscale up --authkey ... --hostname ... --advertise-tags ...` 실행.
+- 가입 완료 후 `tailscale status`가 OK가 될 때까지 헬스체크 노출(dev 컨테이너 시작 게이트로 활용).
+- 종료 시 `tailscale logout` 호출 → ephemeral 노드는 Headscale에서 자동 정리.
+- 추가 init container 모드(`flexctl sidecar pre-stop`)로 graceful shutdown 처리.
+
+**flex-env-\<env_id\> (dev, 사용자 큐레이션 템플릿 이미지)**
+- 이미지: 운영자 큐레이션 베이스(예: `ghcr.io/flex/pytorch-cuda12:1.0`).
+- 권한: 추가 capability 없음. **NET_ADMIN, /dev/net/tun 등 미부여**.
+- 네트워크: `--network=container:flex-net-<env_id>` 로 사이드카 netns 공유. 자기 eth0 없음, 사이드카의 `tailscale0` + Docker 브리지를 그대로 사용.
+- 볼륨: `--mount=type=volume,src=flex-env-<env_id>,dst=/home/dev` (영속 데이터).
+- 부팅: 일반 sshd가 0.0.0.0:22에 바인드(외부 노출 없음, tailnet에서만 도달). 사용자 SSH 공개키는 ENV로 주입되어 entrypoint 스크립트가 `/home/dev/.ssh/authorized_keys`에 기록.
+- GPU: `--gpus all`(또는 명시 인덱스). NVIDIA Container Toolkit이 dev 컨테이너에 적용.
 
 ### 2.4 flexctl client (사용자 노트북)
 
@@ -141,12 +158,25 @@ flexctl client는 만료 7일 전부터 백그라운드로 키 갱신.
 
 MVP는 Tailscale 공식 공개 DERP를 그대로 사용. Headscale 설정에 공식 derpmap URL 지정. 자체 DERP 운영은 후속.
 
-### 3.6 컨테이너 안 tsnet 동작
+### 3.6 사이드카 네트워킹 디테일
 
-- `flexctl init`이 PID 1(`tini`로 reaping 위임 후 fork) 또는 그 자식.
-- `tsnet.Server{Hostname, AuthKey, ControlURL}` 시작.
-- 가상 인터페이스 위에 별도 `sshd`를 바인드(호환성 우선).
-- 사용자 SSH 공개키는 ENV 주입 → 디스크 `authorized_keys`로 반영.
+**왜 사이드카인가**: `tsnet` 라이브러리는 두 모드가 있다 — userspace networking(권한 불필요, 같은 Go 프로세스 안에서만 접근)과 TUN 모드(`CAP_NET_ADMIN` + `/dev/net/tun` 필요, 외부 프로세스가 가상 인터페이스에 바인드 가능). 표준 OpenSSH `sshd`를 dev 컨테이너에서 사용하려면 외부 접근 가능한 인터페이스가 있어야 하므로 TUN 모드가 필수다. dev 컨테이너에 NET_ADMIN을 주면 격리가 약해지므로, **TUN 권한을 사이드카로 분리**하고 dev 컨테이너는 unprivileged 유지한다.
+
+**구체 동작**:
+- 사이드카는 `tailscaled --tun=tailscale0 --state=...`을 실제 데몬으로 기동(tsnet 라이브러리 임베드도 가능하나 운영 도구·디버깅 친화도 면에서 `tailscaled`가 우위).
+- TUN 인터페이스 `tailscale0`은 사이드카의 netns에 생성. dev 컨테이너가 같은 netns를 공유하므로 dev에서도 `tailscale0`이 보임(read-only로 사용).
+- dev 컨테이너의 sshd는 `0.0.0.0:22`에 바인드. netns 내 인터페이스는 `lo`, Docker 브리지의 `eth0`(사이드카 outbound 용), `tailscale0` 셋. `eth0`는 호스트 외부에 노출되지 않으므로 사실상 tailnet에서만 SSH 도달 가능.
+- 사이드카 → Headscale outbound 트래픽은 `eth0`을 거쳐 인터넷으로. dev → tailnet 트래픽은 `tailscale0`을 거침.
+- MagicDNS 동작: 사이드카가 hostname 등록 후 사용자 노트북(또는 다른 노드)에서 `paul-vllm-train.flex` 해석 가능. 트래픽은 사이드카 `tailscale0`로 들어와 dev sshd가 응답.
+
+**시작 순서**:
+1. flexctl agent: 사이드카 컨테이너 create + start.
+2. agent: 사이드카 헬스체크(`docker exec ... tailscale status`) loop, 최대 30s.
+3. 헬스 OK → dev 컨테이너 create + start (`--network=container:<sidecar>`).
+4. dev 컨테이너 부팅 후 sshd ready.
+5. agent → 컨트롤 플레인: `env_ready`.
+
+**종료 순서**: dev 먼저 stop → 사이드카 stop. 비정상 종료 시(어느 한쪽 OOM/crash) agent가 둘 다 정리하고 동일 env_id로 재생성(restart 정책).
 
 ## 4. 핵심 사용자 흐름
 
@@ -166,10 +196,28 @@ MVP는 Tailscale 공식 공개 DERP를 그대로 사용. Headscale 설정에 공
 ### 4.3 환경 생성
 
 1. 사용자가 웹에서 템플릿 선택 + 환경 이름 + 노드 선택.
-2. 컨트롤 플레인이 `envs` 행 생성(creating), Headscale에 ephemeral pre-auth key 발급, agent stream에 `create_env{...}` 푸시.
-3. agent가 `docker create + start`(–gpus all, ENV로 pre-auth key/hostname/tags/authorized_keys 주입).
-4. 컨테이너의 `flexctl init`이 tsnet으로 Headscale 가입, `sshd` 시작, agent에 `env_ready` 보고.
-5. 컨트롤 플레인이 `envs.status=running` 갱신, 웹 UI는 SSH 접속 안내(`ssh dev@paul-vllm-train.flex`).
+2. 컨트롤 플레인이 `envs` 행 생성(status=creating), Headscale에 ephemeral pre-auth key 발급(태그 `tag:env-<slug>`), ACL 갱신, agent stream에 `create_env{env_id, image, hostname, authkey, headscale_url, tags, authorized_keys, gpu_request}` 푸시.
+3. agent가 사이드카 컨테이너 생성:
+   ```
+   docker run -d --name flex-net-<env_id> \
+     --cap-add=NET_ADMIN --device=/dev/net/tun \
+     -e FLEXCTL_AUTHKEY=... -e FLEXCTL_HOSTNAME=paul-vllm-train \
+     -e FLEXCTL_TAGS=tag:env-paul -e FLEXCTL_HEADSCALE_URL=... \
+     ghcr.io/flex/sidecar:<ver>
+   ```
+4. agent가 사이드카 헬스 대기(`tailscale status` Online), 실패 시 cleanup + error.
+5. agent가 dev 컨테이너 생성:
+   ```
+   docker run -d --name flex-env-<env_id> \
+     --network=container:flex-net-<env_id> \
+     --gpus all \
+     --mount=type=volume,src=flex-env-<env_id>,dst=/home/dev \
+     -e FLEXCTL_AUTHORIZED_KEYS="ssh-ed25519 ..." \
+     ghcr.io/flex/pytorch-cuda12:1.0
+   ```
+6. dev 컨테이너 entrypoint가 authorized_keys 기록 후 `sshd -D` 실행.
+7. agent → 컨트롤 플레인: `env_ready{env_id}`. envs UPDATE status=running.
+8. 웹 UI는 SSH 접속 안내(`ssh dev@paul-vllm-train.flex`).
 
 ### 4.4 SSH 접속
 
@@ -187,9 +235,11 @@ VS Code Remote-SSH는 표준 OpenSSH 클라이언트를 사용하므로 그대�
 
 ### 4.5 Stop / Start / Delete
 
-- **Stop**: agent에 `stop_env` → `docker stop` → ephemeral 노드 자동 제거. 볼륨 유지.
-- **Start**: 새 pre-auth key 발급 + `start_env` → 같은 hostname으로 재가입.
-- **Delete**: `docker rm -v`(볼륨까지) + Headscale 잔여 정리 + DB 삭제.
+환경 = 사이드카 + dev 두 컨테이너 묶음으로 일관 처리.
+
+- **Stop**: agent가 dev 먼저 `docker stop` → 사이드카 `docker stop`(`tailscale logout` 트리거). ephemeral 노드 자동 제거. 볼륨 유지.
+- **Start**: 컨트롤 플레인이 새 pre-auth key 발급(같은 hostname/tags 재사용) → agent가 사이드카 → 헬스 대기 → dev 순서로 재기동.
+- **Delete**: `docker rm` 양쪽 + `docker volume rm flex-env-<env_id>` + Headscale 잔여 정리 + ACL에서 해당 사용자 라인 그대로 유지(다른 환경에 사용 중) + DB row 삭제.
 
 ### 4.6 agent 재연결
 
@@ -254,17 +304,18 @@ image_templates (
 )
 
 envs (
-  id              uuid pk,
-  owner_user_id   uuid fk,
-  node_id         uuid fk,
-  template_id     text fk,
-  name            text,
-  hostname        text,
-  status          text,
-  container_id    text,
-  gpu_request     int default 1,
-  volume_name     text,
-  created_at      timestamptz,
+  id                       uuid pk,
+  owner_user_id            uuid fk,
+  node_id                  uuid fk,
+  template_id              text fk,
+  name                     text,
+  hostname                 text,                  -- tailnet hostname (paul-vllm-train)
+  status                   text,
+  sidecar_container_id     text,                  -- flex-net-<env_id>
+  dev_container_id         text,                  -- flex-env-<env_id>
+  gpu_request              int default 1,
+  volume_name              text,                  -- flex-env-<env_id>
+  created_at               timestamptz,
   unique(owner_user_id, name)
 )
 
@@ -297,7 +348,7 @@ audit_log (
 1. **타 사용자 환경 침입** — Headscale ACL이 `tag:device-X` → `tag:env-X:22`만 허용. ACL 변경 권한은 컨트롤 플레인만.
 2. **타 사용자 노드에 컨테이너 띄우기** — API가 `nodes.owner_user_id = current_user`를 항상 검증. agent도 stream 명령에서 owner 일치를 재검증(defense-in-depth).
 3. **노드 페어링 토큰 탈취** — 1회용 + 10분 만료 + HTTPS only.
-4. **컨테이너 → 호스트 escape** — docker default. MVP는 self-pwn(자기 노드 자기 사용)이라 외부 위협 아님. gVisor/Kata는 후속.
+4. **컨테이너 → 호스트 escape** — dev 컨테이너는 추가 capability 없음(NET_ADMIN/CAP_SYS_ADMIN 등 미부여). NET_ADMIN을 가진 사이드카는 운영자 통제 슬림 이미지(`ghcr.io/flex/sidecar`)만 사용하고 외부 입력을 받지 않음(ENV로 받은 키/호스트네임만 사용). MVP는 self-pwn(자기 노드 자기 사용)이라 외부 위협 표면 좁음. gVisor/Kata는 후속.
 5. **컨트롤 플레인 침해 영향** — argon2id 패스워드 해시, AES-GCM secret encrypt-at-rest, KMS 키 환경변수.
 6. **flexctl 바이너리 변조** — 릴리즈 SHA256 + Sigstore 서명(MVP 후).
 
@@ -312,9 +363,11 @@ audit_log (
 | agent ↔ 컨트롤 플레인 stream 끊김 | jittered exp backoff 재연결, 재연결 시 `node_resync`로 양쪽 상태 일치 |
 | 컨테이너 생성 중 agent 크래시 | 다음 stream 연결 시 컨트롤 플레인이 status=creating env 재조회 → 컨테이너 존재 시 running, 없으면 error |
 | Headscale 일시 장애 | 환경 생성은 5xx로 실패. 기존 환경 SSH는 영향 없음(직결 후엔 Headscale 비참여) |
-| pre-auth key 만료 후 재시작 | flexctl init 등록 실패 → agent 보고 → 새 키 발급 후 재시도 |
-| GPU 서버 power-off | agent offline 마킹. Docker restart 정책이 노드 복귀 시 자동 복구 |
-| ACL push 실패 | 환경 생성 fail-closed, 부분 생성 컨테이너 정리 |
+| pre-auth key 만료 후 재시작 | 사이드카 `tailscaled` 등록 실패 → agent 헬스 대기 타임아웃 → 컨트롤 플레인에 보고 → 새 키 발급 후 재시도 |
+| GPU 서버 power-off | agent offline 마킹. Docker restart 정책이 노드 복귀 시 자동 복구. 사이드카가 먼저 올라오도록 `depends_on` 또는 agent 부팅 시 묶음 단위 재기동 로직 |
+| 사이드카 단독 crash | dev 컨테이너의 netns 참조가 깨짐 → dev sshd 응답 불가. agent가 사이드카 비정상 종료 감지 시 묶음 전체 재기동(env_id 동일, 새 ephemeral key 발급) |
+| dev 컨테이너 단독 crash | 사이드카는 유지. agent가 dev만 재시작(같은 사이드카 netns 재연결). 단, 같은 컨테이너 이름 재사용 충돌 회피 위해 `docker rm` 후 `docker run` |
+| ACL push 실패 | 환경 생성 fail-closed, 부분 생성 컨테이너(사이드카+dev 모두) 정리 |
 | 사용자 SSH 키 회전 | 모든 running env에 `update_authorized_keys` broadcast |
 
 ## 8. 테스트 전략
