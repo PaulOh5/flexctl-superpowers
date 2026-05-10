@@ -22,7 +22,7 @@
 | 이미지 카탈로그 | 운영자 큐레이션 템플릿 4–6종 |
 | 스택 | Go 풀스택 (백엔드 + flexctl), 웹은 React |
 | flexctl 형태 | 단일 Go 바이너리, 3가지 모드(`agent`/`init`/`client`) + tsnet 임베드 |
-| 사용자 인증 | 자체 OAuth/magic link, Tailscale 계정 불필요 |
+| 사용자 인증 | 이메일+비밀번호 + 선택적 GitHub OAuth, Tailscale 계정 불필요 |
 
 ## 2. 시스템 개요와 컴포넌트
 
@@ -96,30 +96,37 @@ GPU 노드 (호스트): tailnet 미가입
 
 ### 3.2 태그 설계
 
-- `tag:user-<userId>` — 사용자 본인의 모든 디바이스/환경 마킹
-- `tag:env` — 환경 컨테이너
-- `tag:device` — 사용자 노트북
-- `tag:control` — 컨트롤 플레인 자체 노드(있을 경우)
+Headscale/Tailscale ACL은 노드의 단일 태그로 src/dst 매칭을 한다. 사용자 격리를 단순한 ACL 라인으로 표현하기 위해 **사용자별-역할별 태그**를 사용한다.
+
+- `tag:device-<user-slug>` — 사용자 노트북(예: `tag:device-paul`)
+- `tag:env-<user-slug>` — 사용자 환경 컨테이너(예: `tag:env-paul`)
+
+GPU 호스트는 tailnet 미가입(별도 태그 불필요). 컨트롤 플레인이 모든 태그의 owner.
 
 ### 3.3 ACL
 
-핵심 규칙은 **"같은 `tag:user-X`를 가진 디바이스만 같은 `tag:user-X`의 환경에 접근"**. Headscale ACL JSON에서 사용자별로 라인을 동적 생성한다(컨트롤 플레인이 사용자 가입/탈퇴 시 ACL 재생성 후 push).
+핵심 규칙은 **"`tag:device-X` 노드만 `tag:env-X` 노드의 22번 포트에 접근"**. 컨트롤 플레인이 사용자 가입/삭제 시 사용자별 라인을 동적 생성해 ACL JSON을 재생성하고 Headscale에 push.
 
 ```json
 {
   "tagOwners": {
-    "tag:user-*":  ["control-plane@flex"],
-    "tag:env":     ["control-plane@flex"],
-    "tag:device":  ["control-plane@flex"]
+    "tag:device-paul": ["control-plane@flex"],
+    "tag:env-paul":    ["control-plane@flex"],
+    "tag:device-jane": ["control-plane@flex"],
+    "tag:env-jane":    ["control-plane@flex"]
   },
   "acls": [
-    { "src": ["tag:user-paul:tag:device"],
-      "dst": ["tag:user-paul:tag:env:22"] }
+    { "action": "accept",
+      "src":    ["tag:device-paul"],
+      "dst":    ["tag:env-paul:22"] },
+    { "action": "accept",
+      "src":    ["tag:device-jane"],
+      "dst":    ["tag:env-jane:22"] }
   ]
 }
 ```
 
-ACL push 실패 시 환경 생성은 fail-closed.
+기본 정책은 deny(생략). ACL push 실패 시 환경 생성은 fail-closed.
 
 ### 3.4 Pre-auth key 전략
 
@@ -287,7 +294,7 @@ audit_log (
 
 ### 6.2 위협 모델 핵심
 
-1. **타 사용자 환경 침입** — Headscale ACL이 `tag:user-A 디바이스 → tag:user-A 환경`만 허용. ACL 변경 권한은 컨트롤 플레인만.
+1. **타 사용자 환경 침입** — Headscale ACL이 `tag:device-X` → `tag:env-X:22`만 허용. ACL 변경 권한은 컨트롤 플레인만.
 2. **타 사용자 노드에 컨테이너 띄우기** — API가 `nodes.owner_user_id = current_user`를 항상 검증. agent도 stream 명령에서 owner 일치를 재검증(defense-in-depth).
 3. **노드 페어링 토큰 탈취** — 1회용 + 10분 만료 + HTTPS only.
 4. **컨테이너 → 호스트 escape** — docker default. MVP는 self-pwn(자기 노드 자기 사용)이라 외부 위협 아님. gVisor/Kata는 후속.
