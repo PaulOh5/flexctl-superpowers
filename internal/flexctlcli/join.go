@@ -91,7 +91,7 @@ func NewJoinCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&name, "name", "", "Node name (defaults to hostname)")
 	cmd.Flags().StringVar(&controlPlane, "control-plane", "", "Control plane HTTP URL (e.g. https://flexctl.example.com)")
-	cmd.Flags().StringVar(&grpcAddr, "grpc-address", "", "Override gRPC address (defaults to host:9090 derived from --control-plane)")
+	cmd.Flags().StringVar(&grpcAddr, "grpc-address", "", "gRPC agent stream address, e.g. flexctl.example.com:9090 (required)")
 	cmd.Flags().StringVar(&configPath, "config", defaultConfigPath(), "Path to write agent config")
 	return cmd
 }
