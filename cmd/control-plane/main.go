@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +13,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"google.golang.org/grpc"
+
+	"github.com/paul/flexctl/internal/agentpb"
+	"github.com/paul/flexctl/internal/agentstream"
 	"github.com/paul/flexctl/internal/auth"
 	"github.com/paul/flexctl/internal/db"
 	"github.com/paul/flexctl/internal/headscale"
@@ -102,6 +107,25 @@ func main() {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	grpcAddr := os.Getenv("FLEX_GRPC_ADDR")
+	if grpcAddr == "" {
+		grpcAddr = ":9090"
+	}
+	grpcLis, err := net.Listen("tcp", grpcAddr)
+	if err != nil {
+		slog.Error("grpc listen", "err", err, "addr", grpcAddr)
+		os.Exit(1)
+	}
+	grpcSrv := grpc.NewServer()
+	agentpb.RegisterAgentServer(grpcSrv, agentstream.NewServer(nodesSvc))
+	go func() {
+		slog.Info("grpc serving", "addr", grpcAddr)
+		if err := grpcSrv.Serve(grpcLis); err != nil {
+			slog.Error("grpc serve", "err", err)
+			os.Exit(1)
+		}
+	}()
+
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           r,
@@ -126,4 +150,5 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown error", "err", err)
 	}
+	grpcSrv.GracefulStop()
 }
