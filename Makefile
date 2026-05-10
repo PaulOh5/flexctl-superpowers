@@ -1,4 +1,4 @@
-.PHONY: build run test lint tidy migrate-up migrate-down headscale-up headscale-init
+.PHONY: build run test lint tidy migrate-up migrate-down headscale-up headscale-init proto-gen build-control-plane build-flexctl
 
 DB_URL ?= postgres://flex:flex@localhost:5432/flex?sslmode=disable
 MIGRATE := go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate
@@ -37,3 +37,11 @@ headscale-init:
 	@docker compose exec -T headscale headscale users create control-plane 2>/dev/null || true
 	@echo "creating API key (1y expiration); save the printed value as FLEX_HEADSCALE_API_KEY:"
 	@docker compose exec -T headscale headscale apikeys create --expiration 365d
+
+proto-gen:
+	@mkdir -p internal/agentpb
+	protoc \
+	  --go_out=internal/agentpb --go_opt=paths=source_relative \
+	  --go-grpc_out=internal/agentpb --go-grpc_opt=paths=source_relative \
+	  --proto_path=proto \
+	  agent.proto

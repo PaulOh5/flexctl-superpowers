@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package flexctl.agent.v1;
+
+option go_package = "github.com/paul/flexctl/internal/agentpb;agentpb";
+
+import "google/protobuf/timestamp.proto";
+
+service Agent {
+  // Stream is a long-lived bidirectional stream between an agent and the
+  // control plane. The agent authenticates via the `node-token` metadata
+  // header on stream open. First client message must be Register.
+  rpc Stream(stream AgentMessage) returns (stream ControlMessage);
+}
+
+message AgentMessage {
+  oneof payload {
+    Register register = 1;
+    Heartbeat heartbeat = 2;
+  }
+}
+
+message ControlMessage {
+  oneof payload {
+    RegisterAck register_ack = 1;
+    HeartbeatAck heartbeat_ack = 2;
+  }
+}
+
+message Register {
+  string agent_version = 1;
+  repeated GPU gpus = 2;
+}
+
+message Heartbeat {
+  google.protobuf.Timestamp at = 1;
+}
+
+message RegisterAck {
+  string node_id = 1;
+}
+
+message HeartbeatAck {}
+
+message GPU {
+  int32 index = 1;
+  string model = 2;
+  int32 vram_mb = 3;
+}
