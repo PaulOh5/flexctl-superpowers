@@ -27,7 +27,9 @@ migrate-down:
 headscale-up:
 	docker compose up -d headscale
 	@echo "waiting for headscale to be healthy..."
-	@until curl -fsS http://localhost:8088/health >/dev/null 2>&1; do sleep 1; done
+	@n=0; until curl -fsS http://localhost:8088/health >/dev/null 2>&1; do \
+	  n=$$((n+1)); if [ $$n -ge 30 ]; then echo "headscale did not become healthy in 30s"; exit 1; fi; \
+	  sleep 1; done
 	@echo "headscale is up"
 
 headscale-init:
