@@ -54,7 +54,7 @@ func main() {
 	signer := auth.NewSessionSigner(secret)
 
 	usersSvc := users.NewService(pool)
-	usersH := users.NewHandlers(usersSvc, signer, pool)
+	usersH := users.NewHandlers(usersSvc, signer, pool, users.NoOpPolicy{})
 	usersH.Mount(r)
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
