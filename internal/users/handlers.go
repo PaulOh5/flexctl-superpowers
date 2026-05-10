@@ -101,24 +101,9 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) {
 		Target: u.Slug,
 		IP:     net.ParseIP(remoteIP(r)),
 	})
-	token, err := h.signer.Encode(auth.Session{
-		UserID:    u.ID,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
-	})
-	if err != nil {
-		slog.Error("login session encode", "err", err)
-		httperr.Write(w, http.StatusInternalServerError, "session encode")
+	if !h.issueSession(w, r, u) {
 		return
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     "flex_session",
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   r.TLS != nil,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(30 * 24 * time.Hour),
-	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(meResp{ID: u.ID.String(), Email: u.Email, Slug: u.Slug})
 }
@@ -132,7 +117,7 @@ func (h *Handlers) logout(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     "flex_session",
+		Name:     auth.CookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
@@ -172,15 +157,6 @@ func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.signer.Encode(auth.Session{
-		UserID:    u.ID,
-		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
-	})
-	if err != nil {
-		slog.Error("signup session encode", "err", err)
-		httperr.Write(w, http.StatusInternalServerError, "session encode")
-		return
-	}
 	_ = audit.Log(r.Context(), h.pool, audit.Event{
 		UserID:   &u.ID,
 		Action:   "user.signup",
@@ -188,24 +164,43 @@ func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {
 		Metadata: map[string]any{"email": u.Email},
 		IP:       net.ParseIP(remoteIP(r)),
 	})
-	http.SetCookie(w, &http.Cookie{
-		Name:     "flex_session",
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   r.TLS != nil,
-		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(30 * 24 * time.Hour),
-	})
+	if !h.issueSession(w, r, u) {
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(meResp{ID: u.ID.String(), Email: u.Email, Slug: u.Slug})
 }
 
-func remoteIP(r *http.Request) string {
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		return v
+// issueSession encodes a 30-day session for u and writes the flex_session cookie.
+// Returns false (and writes a 500 response) on encode failure; caller should return.
+func (h *Handlers) issueSession(w http.ResponseWriter, r *http.Request, u User) bool {
+	expires := time.Now().Add(30 * 24 * time.Hour)
+	token, err := h.signer.Encode(auth.Session{
+		UserID:    u.ID,
+		ExpiresAt: expires,
+	})
+	if err != nil {
+		slog.Error("session encode", "err", err)
+		httperr.Write(w, http.StatusInternalServerError, "session encode")
+		return false
 	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     auth.CookieName,
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  expires,
+	})
+	return true
+}
+
+// remoteIP returns the client IP from r.RemoteAddr.
+// chi/middleware.RealIP has already replaced RemoteAddr with the real client IP
+// extracted from X-Forwarded-For / X-Real-IP, so we just split off the port.
+func remoteIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

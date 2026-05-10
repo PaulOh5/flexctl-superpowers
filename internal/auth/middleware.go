@@ -13,12 +13,12 @@ type ctxKey int
 
 const userIDKey ctxKey = 1
 
-const cookieName = "flex_session"
+const CookieName = "flex_session"
 
 func RequireSession(signer *SessionSigner) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			c, err := r.Cookie(cookieName)
+			c, err := r.Cookie(CookieName)
 			if err != nil {
 				httperr.Write(w, http.StatusUnauthorized, "unauthenticated")
 				return
