@@ -24,6 +24,7 @@ func NewHandlers(svc *Service, signer *auth.SessionSigner) *Handlers {
 
 func (h *Handlers) Mount(r chi.Router) {
 	r.Post("/v1/auth/signup", h.signup)
+	r.Post("/v1/auth/login", h.login)
 }
 
 type signupReq struct {
@@ -36,6 +37,50 @@ type meResp struct {
 	ID    string `json:"id"`
 	Email string `json:"email"`
 	Slug  string `json:"slug"`
+}
+
+type loginReq struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+func (h *Handlers) login(w http.ResponseWriter, r *http.Request) {
+	var req loginReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httperr.Write(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	u, err := h.svc.Authenticate(r.Context(), req.Email, req.Password)
+	if errors.Is(err, ErrBadCredentials) {
+		httperr.Write(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	if err != nil {
+		slog.Error("login internal", "err", err)
+		httperr.Write(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+
+	token, err := h.signer.Encode(auth.Session{
+		UserID:    u.ID,
+		ExpiresAt: time.Now().Add(30 * 24 * time.Hour),
+	})
+	if err != nil {
+		slog.Error("login session encode", "err", err)
+		httperr.Write(w, http.StatusInternalServerError, "session encode")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "flex_session",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+		Expires:  time.Now().Add(30 * 24 * time.Hour),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(meResp{ID: u.ID.String(), Email: u.Email, Slug: u.Slug})
 }
 
 func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {

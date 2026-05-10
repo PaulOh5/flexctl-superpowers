@@ -63,3 +63,68 @@ func TestSignupHandler_DuplicateReturns409(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusConflict, resp.StatusCode)
 }
+
+func TestLoginHandler_HappyPath(t *testing.T) {
+	pool := newTestPool(t)
+	svc := users.NewService(pool)
+	_, err := svc.Signup(context.Background(), "p@example.com", "paul", "correct-horse-battery")
+	require.NoError(t, err)
+
+	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
+	h := users.NewHandlers(svc, signer)
+	r := chi.NewRouter()
+	h.Mount(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"email": "P@example.com", "password": "correct-horse-battery",
+	})
+	resp, err := http.Post(srv.URL+"/v1/auth/login", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Len(t, resp.Cookies(), 1)
+}
+
+func TestLoginHandler_BadPasswordReturns401(t *testing.T) {
+	pool := newTestPool(t)
+	svc := users.NewService(pool)
+	_, err := svc.Signup(context.Background(), "p@example.com", "paul", "correct-horse-battery")
+	require.NoError(t, err)
+
+	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
+	h := users.NewHandlers(svc, signer)
+	r := chi.NewRouter()
+	h.Mount(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"email": "p@example.com", "password": "wrong-password-here",
+	})
+	resp, err := http.Post(srv.URL+"/v1/auth/login", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestLoginHandler_UnknownEmailReturns401(t *testing.T) {
+	pool := newTestPool(t)
+	svc := users.NewService(pool)
+	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
+	h := users.NewHandlers(svc, signer)
+	r := chi.NewRouter()
+	h.Mount(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"email": "nobody@example.com", "password": "correct-horse-battery",
+	})
+	resp, err := http.Post(srv.URL+"/v1/auth/login", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
