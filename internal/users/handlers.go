@@ -29,6 +29,7 @@ func (h *Handlers) Mount(r chi.Router) {
 
 func (h *Handlers) MountAuthed(r chi.Router) {
 	r.Get("/v1/me", h.me)
+	r.Post("/v1/auth/logout", h.logout)
 }
 
 func (h *Handlers) me(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +106,19 @@ func (h *Handlers) login(w http.ResponseWriter, r *http.Request) {
 	})
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(meResp{ID: u.ID.String(), Email: u.Email, Slug: u.Slug})
+}
+
+func (h *Handlers) logout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "flex_session",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {

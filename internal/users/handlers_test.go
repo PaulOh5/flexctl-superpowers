@@ -179,3 +179,34 @@ func TestMeHandler_NoCookie401(t *testing.T) {
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
 }
+
+func TestLogoutHandler_ClearsCookie(t *testing.T) {
+	pool := newTestPool(t)
+	svc := users.NewService(pool)
+	u, err := svc.Signup(context.Background(), "p@example.com", "paul", "correct-horse-battery")
+	require.NoError(t, err)
+
+	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
+	h := users.NewHandlers(svc, signer)
+	r := chi.NewRouter()
+	r.Group(func(r chi.Router) {
+		r.Use(auth.RequireSession(signer))
+		h.MountAuthed(r)
+	})
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	token, _ := signer.Encode(auth.Session{UserID: u.ID, ExpiresAt: timeNowPlusHour()})
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "flex_session", Value: token})
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	require.Len(t, resp.Cookies(), 1)
+	c := resp.Cookies()[0]
+	require.Equal(t, "flex_session", c.Name)
+	require.Equal(t, "", c.Value)
+	require.True(t, c.MaxAge < 0 || c.Expires.Before(time.Now()))
+}
