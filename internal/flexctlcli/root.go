@@ -14,6 +14,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
+	root.AddCommand(NewJoinCmd())
 	return root
 }
 
