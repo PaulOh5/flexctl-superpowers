@@ -1,6 +1,7 @@
 package users
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -16,14 +17,31 @@ import (
 	"github.com/paul/flexctl/internal/httperr"
 )
 
+// Policy is a hook fired after a user is successfully signed up.
+// Failure indicates the post-commit synchronization failed; the signup
+// handler will compensate by deleting the user row.
+type Policy interface {
+	OnUserCreated(ctx context.Context, slug string) error
+}
+
+// NoOpPolicy is a Policy that does nothing — useful for tests and for the
+// MVP boot path where Headscale has not been wired yet.
+type NoOpPolicy struct{}
+
+func (NoOpPolicy) OnUserCreated(_ context.Context, _ string) error { return nil }
+
 type Handlers struct {
 	svc    *Service
 	signer *auth.SessionSigner
 	pool   *pgxpool.Pool
+	policy Policy
 }
 
-func NewHandlers(svc *Service, signer *auth.SessionSigner, pool *pgxpool.Pool) *Handlers {
-	return &Handlers{svc: svc, signer: signer, pool: pool}
+func NewHandlers(svc *Service, signer *auth.SessionSigner, pool *pgxpool.Pool, policy Policy) *Handlers {
+	if policy == nil {
+		policy = NoOpPolicy{}
+	}
+	return &Handlers{svc: svc, signer: signer, pool: pool, policy: policy}
 }
 
 func (h *Handlers) Mount(r chi.Router) {
@@ -164,6 +182,14 @@ func (h *Handlers) signup(w http.ResponseWriter, r *http.Request) {
 		Metadata: map[string]any{"email": u.Email},
 		IP:       net.ParseIP(remoteIP(r)),
 	})
+	if err := h.policy.OnUserCreated(r.Context(), u.Slug); err != nil {
+		slog.Error("policy on-user-created", "err", err, "slug", u.Slug)
+		if delErr := h.svc.HardDelete(r.Context(), u.ID); delErr != nil {
+			slog.Error("rollback hard-delete", "err", delErr, "user_id", u.ID)
+		}
+		httperr.Write(w, http.StatusInternalServerError, "registration failed")
+		return
+	}
 	if !h.issueSession(w, r, u) {
 		return
 	}

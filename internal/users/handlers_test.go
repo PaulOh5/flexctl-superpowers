@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -20,7 +21,7 @@ func TestSignupHandler_HappyPath(t *testing.T) {
 	pool := newTestPool(t)
 	svc := users.NewService(pool)
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer, pool)
+	h := users.NewHandlers(svc, signer, pool, users.NoOpPolicy{})
 
 	r := chi.NewRouter()
 	h.Mount(r)
@@ -50,7 +51,7 @@ func TestSignupHandler_DuplicateReturns409(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer, pool)
+	h := users.NewHandlers(svc, signer, pool, users.NoOpPolicy{})
 	r := chi.NewRouter()
 	h.Mount(r)
 	srv := httptest.NewServer(r)
@@ -72,7 +73,7 @@ func TestLoginHandler_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer, pool)
+	h := users.NewHandlers(svc, signer, pool, users.NoOpPolicy{})
 	r := chi.NewRouter()
 	h.Mount(r)
 	srv := httptest.NewServer(r)
@@ -96,7 +97,7 @@ func TestLoginHandler_BadPasswordReturns401(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer, pool)
+	h := users.NewHandlers(svc, signer, pool, users.NoOpPolicy{})
 	r := chi.NewRouter()
 	h.Mount(r)
 	srv := httptest.NewServer(r)
@@ -115,7 +116,7 @@ func TestLoginHandler_UnknownEmailReturns401(t *testing.T) {
 	pool := newTestPool(t)
 	svc := users.NewService(pool)
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer, pool)
+	h := users.NewHandlers(svc, signer, pool, users.NoOpPolicy{})
 	r := chi.NewRouter()
 	h.Mount(r)
 	srv := httptest.NewServer(r)
@@ -132,6 +133,72 @@ func TestLoginHandler_UnknownEmailReturns401(t *testing.T) {
 
 func timeNowPlusHour() time.Time { return time.Now().Add(time.Hour) }
 
+type fakePolicy struct {
+	calls      []string
+	failOnSlug string
+}
+
+func (f *fakePolicy) OnUserCreated(ctx context.Context, slug string) error {
+	f.calls = append(f.calls, slug)
+	if slug == f.failOnSlug {
+		return errFakePolicy
+	}
+	return nil
+}
+
+var errFakePolicy = errors.New("fake policy failure")
+
+func TestSignupHandler_CallsPolicyOnSuccess(t *testing.T) {
+	pool := newTestPool(t)
+	svc := users.NewService(pool)
+	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
+	fp := &fakePolicy{}
+	h := users.NewHandlers(svc, signer, pool, fp)
+
+	r := chi.NewRouter()
+	h.Mount(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"email": "p@example.com", "slug": "paul", "password": "correct-horse-battery",
+	})
+	resp, err := http.Post(srv.URL+"/v1/auth/signup", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	require.Equal(t, []string{"paul"}, fp.calls)
+}
+
+func TestSignupHandler_RollsBackOnPolicyFailure(t *testing.T) {
+	pool := newTestPool(t)
+	svc := users.NewService(pool)
+	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
+	fp := &fakePolicy{failOnSlug: "paul"}
+	h := users.NewHandlers(svc, signer, pool, fp)
+
+	r := chi.NewRouter()
+	h.Mount(r)
+	srv := httptest.NewServer(r)
+	defer srv.Close()
+
+	body, _ := json.Marshal(map[string]string{
+		"email": "p@example.com", "slug": "paul", "password": "correct-horse-battery",
+	})
+	resp, err := http.Post(srv.URL+"/v1/auth/signup", "application/json", bytes.NewReader(body))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+
+	// User should NOT be in DB (compensation)
+	var n int
+	require.NoError(t, pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM users WHERE slug = 'paul'`).Scan(&n))
+	require.Equal(t, 0, n, "rollback should remove the user row")
+}
+
 func TestMeHandler_HappyPath(t *testing.T) {
 	pool := newTestPool(t)
 	svc := users.NewService(pool)
@@ -139,7 +206,7 @@ func TestMeHandler_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer, pool)
+	h := users.NewHandlers(svc, signer, pool, users.NoOpPolicy{})
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
@@ -165,7 +232,7 @@ func TestMeHandler_NoCookie401(t *testing.T) {
 	pool := newTestPool(t)
 	svc := users.NewService(pool)
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer, pool)
+	h := users.NewHandlers(svc, signer, pool, users.NoOpPolicy{})
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
@@ -187,7 +254,7 @@ func TestLogoutHandler_ClearsCookie(t *testing.T) {
 	require.NoError(t, err)
 
 	signer := auth.NewSessionSigner([]byte("test-secret-min-32-bytes-yes-yes-yes"))
-	h := users.NewHandlers(svc, signer, pool)
+	h := users.NewHandlers(svc, signer, pool, users.NoOpPolicy{})
 	r := chi.NewRouter()
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))

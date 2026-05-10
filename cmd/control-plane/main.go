@@ -14,6 +14,8 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/paul/flexctl/internal/auth"
 	"github.com/paul/flexctl/internal/db"
+	"github.com/paul/flexctl/internal/headscale"
+	"github.com/paul/flexctl/internal/policy"
 	"github.com/paul/flexctl/internal/sshkeys"
 	"github.com/paul/flexctl/internal/users"
 )
@@ -53,8 +55,28 @@ func main() {
 	}
 	signer := auth.NewSessionSigner(secret)
 
+	hsURL := os.Getenv("FLEX_HEADSCALE_URL")
+	if hsURL == "" {
+		hsURL = "http://localhost:8088"
+	}
+	hsKey := os.Getenv("FLEX_HEADSCALE_API_KEY")
+	if hsKey == "" {
+		slog.Error("FLEX_HEADSCALE_API_KEY is required (run `make headscale-init` to generate)")
+		os.Exit(1)
+	}
+	hsClient := headscale.NewClient(hsURL, hsKey, 5*time.Second)
+	pol := policy.New(pool, hsClient)
+
+	initCtx, initCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := pol.Initialize(initCtx); err != nil {
+		initCancel()
+		slog.Error("policy initialize", "err", err)
+		os.Exit(1)
+	}
+	initCancel()
+
 	usersSvc := users.NewService(pool)
-	usersH := users.NewHandlers(usersSvc, signer, pool)
+	usersH := users.NewHandlers(usersSvc, signer, pool, pol)
 	usersH.Mount(r)
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
