@@ -86,6 +86,15 @@ func newPool(t *testing.T) *pgxpool.Pool {
 			updated_at timestamptz NOT NULL DEFAULT now(),
 			UNIQUE(owner_user_id, name)
 		);
+		CREATE TABLE ssh_keys (
+			id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name text NOT NULL,
+			public_key text NOT NULL,
+			fingerprint text NOT NULL,
+			created_at timestamptz NOT NULL DEFAULT now(),
+			UNIQUE(user_id, fingerprint)
+		);
 	`)
 	require.NoError(t, err)
 	return pool
