@@ -35,6 +35,7 @@ testcontainers가 임시 Postgres를 띄우므로 docker daemon이 필요.
 | `FLEX_SESSION_SECRET` | (필수) | HMAC 키, 32바이트 이상 |
 | `FLEX_HEADSCALE_URL` | `http://localhost:8088` | Headscale API endpoint (compose 기본값) |
 | `FLEX_HEADSCALE_API_KEY` | (필수) | Headscale API 토큰, `make headscale-init`로 생성 |
+| `FLEX_GRPC_ADDR` | `:9090` | gRPC agent stream 리스닝 주소 |
 
 ## 현재 노출된 엔드포인트
 
@@ -48,3 +49,56 @@ testcontainers가 임시 Postgres를 띄우므로 docker daemon이 필요.
 | GET | `/v1/me/ssh-keys` | session | 내 SSH 키 목록 |
 | POST | `/v1/me/ssh-keys` | session | SSH 키 추가 |
 | DELETE | `/v1/me/ssh-keys/{id}` | session | SSH 키 삭제 |
+| POST | `/v1/nodes/pair-token` | session | 1회용 페어링 토큰 발급 (10분 만료) |
+| POST | `/v1/nodes/pair` | token | 페어링 토큰 사용 + 노드 등록 |
+
+## flexctl agent
+
+GPU 서버에 설치할 단일 Go 바이너리.
+
+### 빌드
+
+    make build-flexctl
+
+### 페어링
+
+웹에서 페어링 토큰 발급 후:
+
+    sudo flexctl join FX-XXXX-YYYY \
+      --name my-rtx-server \
+      --control-plane https://flexctl.example.com \
+      --grpc-address flexctl.example.com:9090
+
+`/etc/flexctl/agent.toml`에 `node_token`이 저장됨 (mode 0600).
+
+### 실행 (foreground)
+
+    sudo flexctl agent
+
+### systemd 유닛 (직접 작성)
+
+`/etc/systemd/system/flexctl-agent.service`:
+
+    [Unit]
+    Description=flexctl GPU node agent
+    After=network-online.target docker.service
+    Wants=network-online.target
+
+    [Service]
+    Type=simple
+    ExecStart=/usr/local/bin/flexctl agent
+    Restart=always
+    RestartSec=5s
+    User=root
+
+    [Install]
+    WantedBy=multi-user.target
+
+활성화:
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now flexctl-agent
+
+로그:
+
+    journalctl -u flexctl-agent -f
