@@ -50,7 +50,7 @@ func TestDispatcher_CreateEnv_HappyPath(t *testing.T) {
 	}
 
 	// Pre-arm sidecar health check
-	mock.ExecOutput["flex-net-"+envID.String()+"-id"] = "tailscale 100.64.0.5\n"
+	mock.ExecOutput["flex-net-"+envID.String()] = "tailscale 100.64.0.5\n"
 
 	require.NoError(t, d.HandleCreate(context.Background(), cmd))
 
@@ -95,7 +95,7 @@ func TestDispatcher_CreateEnv_InsufficientGPU(t *testing.T) {
 func TestDispatcher_CreateEnv_SidecarStartFails_CleansUp(t *testing.T) {
 	mock := envdocker.NewMockDockerClient()
 	envID := uuid.New()
-	mock.NextErrors["StartContainer:flex-net-"+envID.String()+"-id"] = errors.New("boom")
+	mock.NextErrors["StartContainer:flex-net-"+envID.String()] = errors.New("boom")
 
 	stub := &stubStream{}
 	d := newDispatcher(t, mock, stub)
@@ -106,7 +106,7 @@ func TestDispatcher_CreateEnv_SidecarStartFails_CleansUp(t *testing.T) {
 	}
 	require.NoError(t, d.HandleCreate(context.Background(), cmd))
 
-	require.Contains(t, mock.Calls, "RemoveContainer:flex-net-"+envID.String()+"-id")
+	require.Contains(t, mock.Calls, "RemoveContainer:flex-net-"+envID.String())
 
 	require.Len(t, stub.sent, 1)
 	errMsg := stub.sent[0].GetEnvError()
@@ -122,7 +122,7 @@ func TestDispatcher_CreateEnv_SidecarHealthTimeout(t *testing.T) {
 
 	envID := uuid.New()
 	// Exec returns empty → never online
-	mock.ExecOutput["flex-net-"+envID.String()+"-id"] = ""
+	mock.ExecOutput["flex-net-"+envID.String()] = ""
 
 	cmd := &agentpb.CreateEnv{
 		EnvId: envID.String(), ImageRef: "x", SidecarImageRef: "y",
@@ -139,7 +139,7 @@ func TestDispatcher_CreateEnv_SidecarHealthTimeout(t *testing.T) {
 // helper: create env via HandleCreate to set up state
 func setupRunningEnv(t *testing.T, d *envlifecycle.Dispatcher, mock *envdocker.MockDockerClient, envID uuid.UUID) {
 	t.Helper()
-	mock.ExecOutput["flex-net-"+envID.String()+"-id"] = "tailscale 100.64.0.5\n"
+	mock.ExecOutput["flex-net-"+envID.String()] = "tailscale 100.64.0.5\n"
 	cmd := &agentpb.CreateEnv{
 		EnvId: envID.String(), ImageRef: "flex/dev:dev", SidecarImageRef: "flex/sidecar:dev",
 		Hostname: "h", PreauthKey: "k", GpuRequest: 1,
@@ -162,7 +162,7 @@ func TestDispatcher_StopEnv(t *testing.T) {
 	require.NotNil(t, stub.sent[0].GetEnvStopped())
 	require.Equal(t, envID.String(), stub.sent[0].GetEnvStopped().EnvId)
 
-	infoDev, _ := mock.InspectContainer(context.Background(), "flex-env-"+envID.String()+"-id")
+	infoDev, _ := mock.InspectContainer(context.Background(), "flex-env-"+envID.String())
 	require.Equal(t, "exited", infoDev.State)
 }
 
@@ -177,7 +177,7 @@ func TestDispatcher_StartEnv(t *testing.T) {
 	stub.sent = nil
 
 	// Re-arm health for restart's recreated sidecar
-	mock.ExecOutput["flex-net-"+envID.String()+"-id"] = "tailscale 100.64.0.5\n"
+	mock.ExecOutput["flex-net-"+envID.String()] = "tailscale 100.64.0.5\n"
 	require.NoError(t, d.HandleStart(context.Background(), &agentpb.StartEnv{
 		EnvId: envID.String(), PreauthKey: "new-key", AuthorizedKeys: "ssh-ed25519 new",
 	}))
@@ -235,8 +235,8 @@ func TestDispatcher_StartEnv_RmDevFails(t *testing.T) {
 	stub.sent = nil
 
 	// Arm sidecar health for the recreated sidecar, then make rm-dev fail.
-	mock.ExecOutput["flex-net-"+envID.String()+"-id"] = "tailscale 100.64.0.5\n"
-	mock.NextErrors["RemoveContainer:flex-env-"+envID.String()+"-id"] = errors.New("device busy")
+	mock.ExecOutput["flex-net-"+envID.String()] = "tailscale 100.64.0.5\n"
+	mock.NextErrors["RemoveContainer:flex-env-"+envID.String()] = errors.New("device busy")
 
 	require.NoError(t, d.HandleStart(context.Background(), &agentpb.StartEnv{
 		EnvId: envID.String(), PreauthKey: "new-key", AuthorizedKeys: "ssh-ed25519 new",
@@ -248,7 +248,7 @@ func TestDispatcher_StartEnv_RmDevFails(t *testing.T) {
 	require.Contains(t, stub.sent[0].GetEnvError().Detail, "rm dev")
 
 	// The new sidecar must have been removed (not left dangling).
-	require.NotContains(t, mock.Containers, "flex-net-"+envID.String()+"-id",
+	require.NotContains(t, mock.Containers, "flex-net-"+envID.String(),
 		"new sidecar should be removed after rm-dev failure")
 
 	// GPU should be released — a subsequent Allocate(1) must succeed.
@@ -269,7 +269,7 @@ func TestDispatcher_StartEnv_CreateDevFails(t *testing.T) {
 	require.NoError(t, d.HandleStop(context.Background(), &agentpb.StopEnv{EnvId: envID.String()}))
 	stub.sent = nil
 
-	mock.ExecOutput["flex-net-"+envID.String()+"-id"] = "tailscale 100.64.0.5\n"
+	mock.ExecOutput["flex-net-"+envID.String()] = "tailscale 100.64.0.5\n"
 	mock.NextErrors["CreateContainer:flex-env-"+envID.String()] = errors.New("image not found")
 
 	require.NoError(t, d.HandleStart(context.Background(), &agentpb.StartEnv{
@@ -281,7 +281,7 @@ func TestDispatcher_StartEnv_CreateDevFails(t *testing.T) {
 	require.Contains(t, stub.sent[0].GetEnvError().Detail, "create dev")
 
 	// New sidecar must not linger.
-	require.NotContains(t, mock.Containers, "flex-net-"+envID.String()+"-id",
+	require.NotContains(t, mock.Containers, "flex-net-"+envID.String(),
 		"new sidecar should be removed after create-dev failure")
 }
 

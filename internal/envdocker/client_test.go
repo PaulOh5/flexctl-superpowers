@@ -20,7 +20,7 @@ func TestMockDockerClient_HappyPath(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.Equal(t, "flex-env-test-id", id)
+	require.Equal(t, "flex-env-test", id)
 	require.NoError(t, m.StartContainer(ctx, id))
 
 	got, err := m.InspectContainer(ctx, id)
@@ -69,14 +69,14 @@ func TestMockDockerClient_SetExecOutputForRole(t *testing.T) {
 
 	m.SetExecOutputForRole("sidecar", "tailscale 100.64.0.5\n")
 
-	stdout, _, _, err := m.Exec(ctx, "flex-net-a-id", []string{"tailscale", "status"})
+	stdout, _, _, err := m.Exec(ctx, "flex-net-a", []string{"tailscale", "status"})
 	require.NoError(t, err)
 	buf := make([]byte, 100)
 	n, _ := stdout.Read(buf)
 	require.Contains(t, string(buf[:n]), "100.64.0.5")
 
 	// dev container should have empty stdout (no SetExecOutput for it)
-	stdout2, _, _, _ := m.Exec(ctx, "flex-env-a-id", []string{"echo"})
+	stdout2, _, _, _ := m.Exec(ctx, "flex-env-a", []string{"echo"})
 	buf2 := make([]byte, 100)
 	n2, _ := stdout2.Read(buf2)
 	require.Equal(t, 0, n2)

@@ -46,7 +46,7 @@ func (m *MockDockerClient) CreateContainer(_ context.Context, spec ContainerSpec
 	if err := m.take("CreateContainer:" + spec.Name); err != nil {
 		return "", err
 	}
-	id := spec.Name + "-id"
+	id := spec.Name
 	envSlice := make([]string, 0, len(spec.Env))
 	for k, v := range spec.Env {
 		envSlice = append(envSlice, k+"="+v)

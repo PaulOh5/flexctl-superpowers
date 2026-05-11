@@ -189,10 +189,10 @@ func (d *Dispatcher) HandleStop(ctx context.Context, cmd *agentpb.StopEnv) error
 	}
 	sidecarName := "flex-net-" + cmd.GetEnvId()
 	devName := "flex-env-" + cmd.GetEnvId()
-	if err := d.docker.StopContainer(ctx, devName+"-id", 10*time.Second); err != nil {
+	if err := d.docker.StopContainer(ctx, devName, 10*time.Second); err != nil {
 		slog.Warn("stop dev", "err", err)
 	}
-	if err := d.docker.StopContainer(ctx, sidecarName+"-id", 10*time.Second); err != nil {
+	if err := d.docker.StopContainer(ctx, sidecarName, 10*time.Second); err != nil {
 		slog.Warn("stop sidecar", "err", err)
 	}
 	d.alloc.Release(envID)
@@ -214,14 +214,14 @@ func (d *Dispatcher) HandleStart(ctx context.Context, cmd *agentpb.StartEnv) err
 	devName := "flex-env-" + cmd.GetEnvId()
 
 	// Inspect existing dev container to recover labels (image_ref, gpu_indices, etc.)
-	devInfo, err := d.docker.InspectContainer(ctx, devName+"-id")
+	devInfo, err := d.docker.InspectContainer(ctx, devName)
 	if err != nil {
 		d.sendError(cmd.GetEnvId(), "start", "dev container not found: "+err.Error())
 		return nil
 	}
 	gpuIndices := parseIndicesCSV(devInfo.Labels[envdocker.LabelGPUIndices])
 
-	sidecarInfo, err := d.docker.InspectContainer(ctx, sidecarName+"-id")
+	sidecarInfo, err := d.docker.InspectContainer(ctx, sidecarName)
 	if err != nil {
 		d.sendError(cmd.GetEnvId(), "start", "sidecar container not found: "+err.Error())
 		return nil
@@ -239,7 +239,7 @@ func (d *Dispatcher) HandleStart(ctx context.Context, cmd *agentpb.StartEnv) err
 	}
 
 	// Recreate sidecar with new preauth_key (docker start can't change ENV)
-	if err := d.docker.RemoveContainer(ctx, sidecarName+"-id", true); err != nil {
+	if err := d.docker.RemoveContainer(ctx, sidecarName, true); err != nil {
 		d.sendError(cmd.GetEnvId(), "start", "rm sidecar: "+err.Error())
 		d.alloc.Release(envID)
 		return nil
@@ -283,7 +283,7 @@ func (d *Dispatcher) HandleStart(ctx context.Context, cmd *agentpb.StartEnv) err
 		_ = d.docker.RemoveContainer(ctx, sidecarID, true)
 		d.alloc.Release(envID)
 	}
-	if err := d.docker.RemoveContainer(ctx, devName+"-id", true); err != nil {
+	if err := d.docker.RemoveContainer(ctx, devName, true); err != nil {
 		abortSidecar()
 		d.sendError(cmd.GetEnvId(), "start", "rm dev: "+err.Error())
 		return nil
@@ -324,10 +324,10 @@ func (d *Dispatcher) HandleDelete(ctx context.Context, cmd *agentpb.DeleteEnv) e
 	devName := "flex-env-" + cmd.GetEnvId()
 	volumeName := "flex-env-" + cmd.GetEnvId()
 
-	_ = d.docker.StopContainer(ctx, devName+"-id", 5*time.Second)
-	_ = d.docker.StopContainer(ctx, sidecarName+"-id", 5*time.Second)
-	_ = d.docker.RemoveContainer(ctx, devName+"-id", true)
-	_ = d.docker.RemoveContainer(ctx, sidecarName+"-id", true)
+	_ = d.docker.StopContainer(ctx, devName, 5*time.Second)
+	_ = d.docker.StopContainer(ctx, sidecarName, 5*time.Second)
+	_ = d.docker.RemoveContainer(ctx, devName, true)
+	_ = d.docker.RemoveContainer(ctx, sidecarName, true)
 	if err := d.docker.RemoveVolume(ctx, volumeName); err != nil {
 		slog.Warn("rm volume", "err", err, "name", volumeName)
 	}
