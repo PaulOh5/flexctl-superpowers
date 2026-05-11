@@ -26,6 +26,20 @@ import (
 
 const tokenMetadataKey = "node-token"
 
+// lockedServerStream wraps Agent_StreamServer with a mutex so concurrent
+// Send calls (from Stream's recv loop and EnvsDispatcher HTTP handlers)
+// don't violate gRPC's "no concurrent SendMsg" contract.
+type lockedServerStream struct {
+	mu sync.Mutex
+	s  agentpb.Agent_StreamServer
+}
+
+func (l *lockedServerStream) Send(msg *agentpb.ControlMessage) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.s.Send(msg)
+}
+
 type Server struct {
 	agentpb.UnimplementedAgentServer
 
@@ -36,21 +50,23 @@ type Server struct {
 	hs    *headscale.Client
 
 	mu      sync.Mutex
-	streams map[uuid.UUID]agentpb.Agent_StreamServer
+	streams map[uuid.UUID]*lockedServerStream
 }
 
 func NewServer(nodesSvc *nodes.Service, envsSvc *envs.Service, usersSvc *users.Service,
 	keysSvc *sshkeys.Service, hs *headscale.Client) *Server {
 	return &Server{
 		nodes: nodesSvc, envs: envsSvc, users: usersSvc, keys: keysSvc, hs: hs,
-		streams: map[uuid.UUID]agentpb.Agent_StreamServer{},
+		streams: map[uuid.UUID]*lockedServerStream{},
 	}
 }
 
-func (s *Server) registerStream(nodeID uuid.UUID, stream agentpb.Agent_StreamServer) {
+func (s *Server) registerStream(nodeID uuid.UUID, stream agentpb.Agent_StreamServer) *lockedServerStream {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.streams[nodeID] = stream
+	ls := &lockedServerStream{s: stream}
+	s.streams[nodeID] = ls
+	return ls
 }
 
 func (s *Server) unregisterStream(nodeID uuid.UUID) {
@@ -59,7 +75,7 @@ func (s *Server) unregisterStream(nodeID uuid.UUID) {
 	delete(s.streams, nodeID)
 }
 
-func (s *Server) streamFor(nodeID uuid.UUID) (agentpb.Agent_StreamServer, bool) {
+func (s *Server) streamFor(nodeID uuid.UUID) (*lockedServerStream, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.streams[nodeID]
@@ -88,7 +104,7 @@ func (s *Server) Stream(stream agentpb.Agent_StreamServer) error {
 
 	slog.Info("agent connected", "node_id", node.ID.String(), "name", node.Name)
 
-	s.registerStream(node.ID, stream)
+	ls := s.registerStream(node.ID, stream)
 	defer s.unregisterStream(node.ID)
 	defer func() {
 		bgCtx := context.Background()
@@ -114,7 +130,7 @@ func (s *Server) Stream(stream agentpb.Agent_StreamServer) error {
 		slog.Error("update register", "err", err)
 		return status.Error(codes.Internal, "update register")
 	}
-	if err := stream.Send(&agentpb.ControlMessage{
+	if err := ls.Send(&agentpb.ControlMessage{
 		Payload: &agentpb.ControlMessage_RegisterAck{
 			RegisterAck: &agentpb.RegisterAck{NodeId: node.ID.String()},
 		},
@@ -136,7 +152,7 @@ func (s *Server) Stream(stream agentpb.Agent_StreamServer) error {
 			if err := s.nodes.RecordHeartbeat(ctx, node.ID); err != nil {
 				slog.Warn("record heartbeat", "err", err)
 			}
-			_ = stream.Send(&agentpb.ControlMessage{
+			_ = ls.Send(&agentpb.ControlMessage{
 				Payload: &agentpb.ControlMessage_HeartbeatAck{HeartbeatAck: &agentpb.HeartbeatAck{}},
 			})
 
@@ -268,12 +284,12 @@ func (d *EnvsDispatcher) Create(ctx context.Context, envID uuid.UUID) error {
 		return err
 	}
 
-	stream, ok := d.srv.streamFor(env.NodeID)
+	ls, ok := d.srv.streamFor(env.NodeID)
 	if !ok {
 		return fmt.Errorf("agent not connected for node %s", env.NodeID)
 	}
 
-	return stream.Send(&agentpb.ControlMessage{
+	return ls.Send(&agentpb.ControlMessage{
 		Payload: &agentpb.ControlMessage_CreateEnv{
 			CreateEnv: &agentpb.CreateEnv{
 				EnvId:           envID.String(),
@@ -296,11 +312,11 @@ func (d *EnvsDispatcher) Stop(ctx context.Context, envID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	stream, ok := d.srv.streamFor(env.NodeID)
+	ls, ok := d.srv.streamFor(env.NodeID)
 	if !ok {
 		return fmt.Errorf("agent not connected")
 	}
-	return stream.Send(&agentpb.ControlMessage{
+	return ls.Send(&agentpb.ControlMessage{
 		Payload: &agentpb.ControlMessage_StopEnv{StopEnv: &agentpb.StopEnv{EnvId: envID.String()}},
 	})
 }
@@ -325,11 +341,11 @@ func (d *EnvsDispatcher) Start(ctx context.Context, envID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	stream, ok := d.srv.streamFor(env.NodeID)
+	ls, ok := d.srv.streamFor(env.NodeID)
 	if !ok {
 		return fmt.Errorf("agent not connected")
 	}
-	return stream.Send(&agentpb.ControlMessage{
+	return ls.Send(&agentpb.ControlMessage{
 		Payload: &agentpb.ControlMessage_StartEnv{
 			StartEnv: &agentpb.StartEnv{
 				EnvId:          envID.String(),
@@ -345,12 +361,12 @@ func (d *EnvsDispatcher) Delete(ctx context.Context, envID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	stream, ok := d.srv.streamFor(env.NodeID)
+	ls, ok := d.srv.streamFor(env.NodeID)
 	if !ok {
 		// agent offline → just remove DB row
 		return d.envs.Delete(ctx, envID)
 	}
-	return stream.Send(&agentpb.ControlMessage{
+	return ls.Send(&agentpb.ControlMessage{
 		Payload: &agentpb.ControlMessage_DeleteEnv{DeleteEnv: &agentpb.DeleteEnv{EnvId: envID.String()}},
 	})
 }

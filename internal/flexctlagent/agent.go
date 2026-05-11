@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"google.golang.org/grpc"
@@ -17,6 +18,19 @@ import (
 	"github.com/paul/flexctl/internal/envdocker"
 	"github.com/paul/flexctl/internal/envlifecycle"
 )
+
+// lockedClientStream wraps Agent_StreamClient.Send with a mutex so the
+// heartbeat goroutine and envlifecycle.Dispatcher can both send concurrently.
+type lockedClientStream struct {
+	mu sync.Mutex
+	s  agentpb.Agent_StreamClient
+}
+
+func (l *lockedClientStream) Send(msg *agentpb.AgentMessage) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.s.Send(msg)
+}
 
 // GPU mirrors agentpb.GPU but defined here to avoid coupling test code to proto.
 type GPU struct {
@@ -111,10 +125,11 @@ func (a *Agent) runOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ls := &lockedClientStream{s: stream}
 
 	// Send Register
 	gpus := a.detectGPUs(ctx)
-	if err := stream.Send(&agentpb.AgentMessage{
+	if err := ls.Send(&agentpb.AgentMessage{
 		Payload: &agentpb.AgentMessage_Register{
 			Register: &agentpb.Register{
 				AgentVersion: a.cfg.AgentVersion,
@@ -133,10 +148,10 @@ func (a *Agent) runOnce(ctx context.Context) error {
 	// Build and send EnvStateSnapshot if docker/allocator are configured.
 	var disp *envlifecycle.Dispatcher
 	if a.cfg.DockerClient != nil && a.cfg.GPUAllocator != nil {
-		disp = envlifecycle.NewDispatcher(a.cfg.DockerClient, a.cfg.GPUAllocator, stream)
+		disp = envlifecycle.NewDispatcher(a.cfg.DockerClient, a.cfg.GPUAllocator, ls)
 		envIDs, err := disp.BuildEnvStateSnapshot(streamCtx)
 		if err == nil {
-			_ = stream.Send(&agentpb.AgentMessage{
+			_ = ls.Send(&agentpb.AgentMessage{
 				Payload: &agentpb.AgentMessage_EnvSnapshot{
 					EnvSnapshot: &agentpb.EnvStateSnapshot{RunningEnvIds: envIDs},
 				},
@@ -155,7 +170,7 @@ func (a *Agent) runOnce(ctx context.Context) error {
 				errCh <- streamCtx.Err()
 				return
 			case <-ticker.C:
-				if err := stream.Send(&agentpb.AgentMessage{
+				if err := ls.Send(&agentpb.AgentMessage{
 					Payload: &agentpb.AgentMessage_Heartbeat{
 						Heartbeat: &agentpb.Heartbeat{At: timestamppb.Now()},
 					},
