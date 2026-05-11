@@ -12,6 +12,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 type ContainerSpec struct {
@@ -163,8 +164,8 @@ func (r *RealDockerClient) Exec(ctx context.Context, id string, cmd []string) (i
 	}
 	defer att.Close()
 	var stdout, stderr bytes.Buffer
-	if _, err := io.Copy(&stdout, att.Reader); err != nil {
-		return nil, nil, 0, fmt.Errorf("read stdout: %w", err)
+	if _, err := stdcopy.StdCopy(&stdout, &stderr, att.Reader); err != nil {
+		return nil, nil, 0, fmt.Errorf("read exec output: %w", err)
 	}
 	insp, err := r.cli.ContainerExecInspect(ctx, exec.ID)
 	if err != nil {
@@ -194,3 +195,5 @@ func envMapToSlice(m map[string]string) []string {
 	}
 	return out
 }
+
+var _ DockerClient = (*RealDockerClient)(nil)

@@ -170,3 +170,5 @@ func (m *MockDockerClient) SetExecOutputForRole(role, stdout string) {
 		}
 	}
 }
+
+var _ DockerClient = (*MockDockerClient)(nil)
