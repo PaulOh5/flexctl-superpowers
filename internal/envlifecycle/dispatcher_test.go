@@ -135,3 +135,101 @@ func TestDispatcher_CreateEnv_SidecarHealthTimeout(t *testing.T) {
 	require.NotNil(t, errMsg)
 	require.Equal(t, "sidecar_health", errMsg.Stage)
 }
+
+// helper: create env via HandleCreate to set up state
+func setupRunningEnv(t *testing.T, d *envlifecycle.Dispatcher, mock *envdocker.MockDockerClient, envID uuid.UUID) {
+	t.Helper()
+	mock.ExecOutput["flex-net-"+envID.String()+"-id"] = "tailscale 100.64.0.5\n"
+	cmd := &agentpb.CreateEnv{
+		EnvId: envID.String(), ImageRef: "flex/dev:dev", SidecarImageRef: "flex/sidecar:dev",
+		Hostname: "h", PreauthKey: "k", GpuRequest: 1,
+	}
+	require.NoError(t, d.HandleCreate(context.Background(), cmd))
+}
+
+func TestDispatcher_StopEnv(t *testing.T) {
+	mock := envdocker.NewMockDockerClient()
+	stub := &stubStream{}
+	d := newDispatcher(t, mock, stub)
+
+	envID := uuid.New()
+	setupRunningEnv(t, d, mock, envID)
+	stub.sent = nil // reset
+
+	require.NoError(t, d.HandleStop(context.Background(), &agentpb.StopEnv{EnvId: envID.String()}))
+
+	require.Len(t, stub.sent, 1)
+	require.NotNil(t, stub.sent[0].GetEnvStopped())
+	require.Equal(t, envID.String(), stub.sent[0].GetEnvStopped().EnvId)
+
+	infoDev, _ := mock.InspectContainer(context.Background(), "flex-env-"+envID.String()+"-id")
+	require.Equal(t, "exited", infoDev.State)
+}
+
+func TestDispatcher_StartEnv(t *testing.T) {
+	mock := envdocker.NewMockDockerClient()
+	stub := &stubStream{}
+	d := newDispatcher(t, mock, stub)
+
+	envID := uuid.New()
+	setupRunningEnv(t, d, mock, envID)
+	require.NoError(t, d.HandleStop(context.Background(), &agentpb.StopEnv{EnvId: envID.String()}))
+	stub.sent = nil
+
+	// Re-arm health for restart's recreated sidecar
+	mock.ExecOutput["flex-net-"+envID.String()+"-id"] = "tailscale 100.64.0.5\n"
+	require.NoError(t, d.HandleStart(context.Background(), &agentpb.StartEnv{
+		EnvId: envID.String(), PreauthKey: "new-key", AuthorizedKeys: "ssh-ed25519 new",
+	}))
+
+	require.Len(t, stub.sent, 1)
+	require.NotNil(t, stub.sent[0].GetEnvReady())
+}
+
+func TestDispatcher_DeleteEnv(t *testing.T) {
+	mock := envdocker.NewMockDockerClient()
+	stub := &stubStream{}
+	d := newDispatcher(t, mock, stub)
+
+	envID := uuid.New()
+	setupRunningEnv(t, d, mock, envID)
+	stub.sent = nil
+
+	require.NoError(t, d.HandleDelete(context.Background(), &agentpb.DeleteEnv{EnvId: envID.String()}))
+
+	require.Len(t, stub.sent, 1)
+	require.NotNil(t, stub.sent[0].GetEnvDeleted())
+
+	all, _ := mock.ListContainers(context.Background(), nil)
+	require.Empty(t, all)
+}
+
+func TestDispatcher_DeleteEnv_VolumeRemoved(t *testing.T) {
+	mock := envdocker.NewMockDockerClient()
+	mock.Volumes["flex-env-pre"] = true
+	stub := &stubStream{}
+	d := newDispatcher(t, mock, stub)
+
+	envID := uuid.New()
+	setupRunningEnv(t, d, mock, envID)
+	mock.Volumes["flex-env-"+envID.String()] = true
+	stub.sent = nil
+
+	require.NoError(t, d.HandleDelete(context.Background(), &agentpb.DeleteEnv{EnvId: envID.String()}))
+
+	require.False(t, mock.Volumes["flex-env-"+envID.String()])
+	require.True(t, mock.Volumes["flex-env-pre"])
+}
+
+func TestDispatcher_BuildEnvStateSnapshot(t *testing.T) {
+	mock := envdocker.NewMockDockerClient()
+	stub := &stubStream{}
+	d := newDispatcher(t, mock, stub)
+
+	envID := uuid.New()
+	setupRunningEnv(t, d, mock, envID)
+
+	snap, err := d.BuildEnvStateSnapshot(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []string{envID.String()}, snap)
+}

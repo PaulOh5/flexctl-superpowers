@@ -181,5 +181,170 @@ func (d *Dispatcher) waitSidecarHealth(ctx context.Context, sidecarID string) er
 	return fmt.Errorf("sidecar did not report tailnet IP in %s", d.healthTimeout)
 }
 
-// no-op for slog import until Task 11 expands this file
-var _ = slog.Default
+func (d *Dispatcher) HandleStop(ctx context.Context, cmd *agentpb.StopEnv) error {
+	envID, err := uuid.Parse(cmd.GetEnvId())
+	if err != nil {
+		d.sendError(cmd.GetEnvId(), "unknown", "invalid env_id")
+		return nil
+	}
+	sidecarName := "flex-net-" + cmd.GetEnvId()
+	devName := "flex-env-" + cmd.GetEnvId()
+	if err := d.docker.StopContainer(ctx, devName+"-id", 10*time.Second); err != nil {
+		slog.Warn("stop dev", "err", err)
+	}
+	if err := d.docker.StopContainer(ctx, sidecarName+"-id", 10*time.Second); err != nil {
+		slog.Warn("stop sidecar", "err", err)
+	}
+	d.alloc.Release(envID)
+	_ = d.sender.Send(&agentpb.AgentMessage{
+		Payload: &agentpb.AgentMessage_EnvStopped{
+			EnvStopped: &agentpb.EnvStopped{EnvId: cmd.GetEnvId()},
+		},
+	})
+	return nil
+}
+
+func (d *Dispatcher) HandleStart(ctx context.Context, cmd *agentpb.StartEnv) error {
+	envID, err := uuid.Parse(cmd.GetEnvId())
+	if err != nil {
+		d.sendError(cmd.GetEnvId(), "unknown", "invalid env_id")
+		return nil
+	}
+	sidecarName := "flex-net-" + cmd.GetEnvId()
+	devName := "flex-env-" + cmd.GetEnvId()
+
+	// Inspect existing dev container to recover labels (image_ref, gpu_indices, etc.)
+	devInfo, err := d.docker.InspectContainer(ctx, devName+"-id")
+	if err != nil {
+		d.sendError(cmd.GetEnvId(), "start", "dev container not found: "+err.Error())
+		return nil
+	}
+	gpuIndices := parseIndicesCSV(devInfo.Labels[envdocker.LabelGPUIndices])
+
+	sidecarInfo, err := d.docker.InspectContainer(ctx, sidecarName+"-id")
+	if err != nil {
+		d.sendError(cmd.GetEnvId(), "start", "sidecar container not found: "+err.Error())
+		return nil
+	}
+
+	// Reallocate GPU
+	if len(gpuIndices) > 0 {
+		if _, err := d.alloc.Allocate(envID, len(gpuIndices)); err != nil {
+			d.sendError(cmd.GetEnvId(), "start", err.Error())
+			return nil
+		}
+	}
+
+	// Recreate sidecar with new preauth_key (docker start can't change ENV)
+	if err := d.docker.RemoveContainer(ctx, sidecarName+"-id", true); err != nil {
+		d.sendError(cmd.GetEnvId(), "start", "rm sidecar: "+err.Error())
+		d.alloc.Release(envID)
+		return nil
+	}
+	sidecarID, err := d.docker.CreateContainer(ctx, envdocker.ContainerSpec{
+		Name:    sidecarName,
+		Image:   sidecarInfo.Labels[envdocker.LabelImageRef],
+		Labels:  sidecarInfo.Labels,
+		CapAdd:  []string{"NET_ADMIN"},
+		Devices: []string{"/dev/net/tun"},
+		Env: map[string]string{
+			"FLEXCTL_HOSTNAME":      sidecarInfo.Labels[envdocker.LabelHostname],
+			"FLEXCTL_AUTHKEY":       cmd.GetPreauthKey(),
+			"FLEXCTL_HEADSCALE_URL": sidecarInfo.Labels[envdocker.LabelHeadscaleURL],
+			"FLEXCTL_TAGS":          sidecarInfo.Labels[envdocker.LabelTags],
+		},
+	})
+	if err != nil {
+		d.sendError(cmd.GetEnvId(), "start", "create sidecar: "+err.Error())
+		d.alloc.Release(envID)
+		return nil
+	}
+	if err := d.docker.StartContainer(ctx, sidecarID); err != nil {
+		_ = d.docker.RemoveContainer(ctx, sidecarID, true)
+		d.alloc.Release(envID)
+		d.sendError(cmd.GetEnvId(), "start", "start sidecar: "+err.Error())
+		return nil
+	}
+	if err := d.waitSidecarHealth(ctx, sidecarID); err != nil {
+		_ = d.docker.StopContainer(ctx, sidecarID, 5*time.Second)
+		_ = d.docker.RemoveContainer(ctx, sidecarID, true)
+		d.alloc.Release(envID)
+		d.sendError(cmd.GetEnvId(), "start", "sidecar health: "+err.Error())
+		return nil
+	}
+
+	// Recreate dev with new authorized_keys
+	if err := d.docker.RemoveContainer(ctx, devName+"-id", true); err != nil {
+		d.sendError(cmd.GetEnvId(), "start", "rm dev: "+err.Error())
+		return nil
+	}
+	devID, err := d.docker.CreateContainer(ctx, envdocker.ContainerSpec{
+		Name: devName, Image: devInfo.Labels[envdocker.LabelImageRef],
+		Labels:      devInfo.Labels,
+		NetworkMode: "container:" + sidecarName,
+		GPUIndices:  gpuIndices,
+		Env:         map[string]string{"FLEXCTL_AUTHORIZED_KEYS": cmd.GetAuthorizedKeys()},
+		VolumeMounts: []envdocker.VolumeMount{
+			{Source: devInfo.Labels[envdocker.LabelVolumeName], Target: "/home/dev"},
+		},
+	})
+	if err != nil {
+		d.sendError(cmd.GetEnvId(), "start", "create dev: "+err.Error())
+		return nil
+	}
+	if err := d.docker.StartContainer(ctx, devID); err != nil {
+		d.sendError(cmd.GetEnvId(), "start", "start dev: "+err.Error())
+		return nil
+	}
+
+	d.sendReady(cmd.GetEnvId(), sidecarID, devID, gpuIndices)
+	return nil
+}
+
+func (d *Dispatcher) HandleDelete(ctx context.Context, cmd *agentpb.DeleteEnv) error {
+	envID, err := uuid.Parse(cmd.GetEnvId())
+	if err != nil {
+		d.sendError(cmd.GetEnvId(), "unknown", "invalid env_id")
+		return nil
+	}
+	sidecarName := "flex-net-" + cmd.GetEnvId()
+	devName := "flex-env-" + cmd.GetEnvId()
+	volumeName := "flex-env-" + cmd.GetEnvId()
+
+	_ = d.docker.StopContainer(ctx, devName+"-id", 5*time.Second)
+	_ = d.docker.StopContainer(ctx, sidecarName+"-id", 5*time.Second)
+	_ = d.docker.RemoveContainer(ctx, devName+"-id", true)
+	_ = d.docker.RemoveContainer(ctx, sidecarName+"-id", true)
+	if err := d.docker.RemoveVolume(ctx, volumeName); err != nil {
+		slog.Warn("rm volume", "err", err, "name", volumeName)
+	}
+	d.alloc.Release(envID)
+
+	_ = d.sender.Send(&agentpb.AgentMessage{
+		Payload: &agentpb.AgentMessage_EnvDeleted{
+			EnvDeleted: &agentpb.EnvDeleted{EnvId: cmd.GetEnvId()},
+		},
+	})
+	return nil
+}
+
+// BuildEnvStateSnapshot lists running dev containers and returns their env_ids.
+// Called by flexctlagent on reconnect (sent as EnvStateSnapshot).
+func (d *Dispatcher) BuildEnvStateSnapshot(ctx context.Context) ([]string, error) {
+	list, err := d.docker.ListContainers(ctx, map[string]string{
+		envdocker.LabelRole: "dev",
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, c := range list {
+		if c.State != "running" {
+			continue
+		}
+		if id := c.Labels[envdocker.LabelEnvID]; id != "" {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
