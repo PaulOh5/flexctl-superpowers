@@ -16,6 +16,7 @@ func NewRootCmd() *cobra.Command {
 	}
 	root.AddCommand(NewJoinCmd())
 	root.AddCommand(NewAgentCmd())
+	root.AddCommand(NewSidecarCmd())
 	return root
 }
 
