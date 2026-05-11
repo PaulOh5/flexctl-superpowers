@@ -1,4 +1,4 @@
-.PHONY: build run test lint tidy migrate-up migrate-down headscale-up headscale-init proto-gen build-control-plane build-flexctl
+.PHONY: build run test lint tidy migrate-up migrate-down headscale-up headscale-init proto-gen build-control-plane build-flexctl sidecar-image dev-image
 
 DB_URL ?= postgres://flex:flex@localhost:5432/flex?sslmode=disable
 MIGRATE := go run -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate
@@ -50,3 +50,10 @@ proto-gen:
 	  --go-grpc_out=internal/agentpb --go-grpc_opt=paths=source_relative \
 	  --proto_path=proto \
 	  agent.proto
+
+sidecar-image:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/flexctl ./cmd/flexctl
+	docker build -t flex/sidecar:dev -f images/sidecar/Dockerfile .
+
+dev-image:
+	docker build -t flex/dev-cuda-base:dev images/dev-cuda-base
