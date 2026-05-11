@@ -13,10 +13,9 @@ import (
 )
 
 var (
-	ErrInvalidName  = errors.New("invalid env name")
-	ErrNameTaken    = errors.New("env name already taken")
-	ErrNotFound     = errors.New("env not found")
-	ErrInvalidState = errors.New("invalid state transition")
+	ErrInvalidName = errors.New("invalid env name")
+	ErrNameTaken   = errors.New("env name already taken")
+	ErrNotFound    = errors.New("env not found")
 )
 
 var nameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}[a-z0-9]$`)
