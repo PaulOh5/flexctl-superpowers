@@ -233,3 +233,23 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	}
 	return nil
 }
+
+// TemplateByID is a thin pass-through used by the dispatcher.
+func (s *Service) TemplateByID(ctx context.Context, id string) (TemplateInfo, error) {
+	var t TemplateInfo
+	err := s.pool.QueryRow(ctx,
+		`SELECT image_ref, default_cmd FROM image_templates WHERE id = $1 AND enabled = true`, id,
+	).Scan(&t.ImageRef, &t.DefaultCmd)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TemplateInfo{}, ErrNotFound
+	}
+	if err != nil {
+		return TemplateInfo{}, fmt.Errorf("template: %w", err)
+	}
+	return t, nil
+}
+
+type TemplateInfo struct {
+	ImageRef   string
+	DefaultCmd []string
+}

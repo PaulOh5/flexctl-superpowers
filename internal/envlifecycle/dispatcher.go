@@ -227,12 +227,15 @@ func (d *Dispatcher) HandleStart(ctx context.Context, cmd *agentpb.StartEnv) err
 		return nil
 	}
 
-	// Reallocate GPU
+	// Reallocate GPU — use newly allocated indices so the dev container and
+	// sendReady reflect the actual current allocation, not a potentially stale label.
 	if len(gpuIndices) > 0 {
-		if _, err := d.alloc.Allocate(envID, len(gpuIndices)); err != nil {
+		allocated, err := d.alloc.Allocate(envID, len(gpuIndices))
+		if err != nil {
 			d.sendError(cmd.GetEnvId(), "start", err.Error())
 			return nil
 		}
+		gpuIndices = allocated
 	}
 
 	// Recreate sidecar with new preauth_key (docker start can't change ENV)
@@ -273,8 +276,15 @@ func (d *Dispatcher) HandleStart(ctx context.Context, cmd *agentpb.StartEnv) err
 		return nil
 	}
 
-	// Recreate dev with new authorized_keys
+	// Recreate dev with new authorized_keys.
+	// On any failure here the new sidecar must also be cleaned up.
+	abortSidecar := func() {
+		_ = d.docker.StopContainer(ctx, sidecarID, 5*time.Second)
+		_ = d.docker.RemoveContainer(ctx, sidecarID, true)
+		d.alloc.Release(envID)
+	}
 	if err := d.docker.RemoveContainer(ctx, devName+"-id", true); err != nil {
+		abortSidecar()
 		d.sendError(cmd.GetEnvId(), "start", "rm dev: "+err.Error())
 		return nil
 	}
@@ -289,10 +299,13 @@ func (d *Dispatcher) HandleStart(ctx context.Context, cmd *agentpb.StartEnv) err
 		},
 	})
 	if err != nil {
+		abortSidecar()
 		d.sendError(cmd.GetEnvId(), "start", "create dev: "+err.Error())
 		return nil
 	}
 	if err := d.docker.StartContainer(ctx, devID); err != nil {
+		_ = d.docker.RemoveContainer(ctx, devID, true)
+		abortSidecar()
 		d.sendError(cmd.GetEnvId(), "start", "start dev: "+err.Error())
 		return nil
 	}

@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/paul/flexctl/internal/agentpb"
+	"github.com/paul/flexctl/internal/envdocker"
+	"github.com/paul/flexctl/internal/envlifecycle"
 )
 
 // GPU mirrors agentpb.GPU but defined here to avoid coupling test code to proto.
@@ -44,6 +46,8 @@ type Config struct {
 	BackoffInitial    time.Duration // default 1s
 	BackoffMax        time.Duration // default 60s
 	GPUDetector       GPUDetector   // optional; nil → empty list
+	DockerClient      envdocker.DockerClient
+	GPUAllocator      *envlifecycle.GPUAllocator
 }
 
 type Agent struct {
@@ -126,7 +130,21 @@ func (a *Agent) runOnce(ctx context.Context) error {
 		return err
 	}
 
-	// Concurrently: heartbeat sender + ack receiver
+	// Build and send EnvStateSnapshot if docker/allocator are configured.
+	var disp *envlifecycle.Dispatcher
+	if a.cfg.DockerClient != nil && a.cfg.GPUAllocator != nil {
+		disp = envlifecycle.NewDispatcher(a.cfg.DockerClient, a.cfg.GPUAllocator, stream)
+		envIDs, err := disp.BuildEnvStateSnapshot(streamCtx)
+		if err == nil {
+			_ = stream.Send(&agentpb.AgentMessage{
+				Payload: &agentpb.AgentMessage_EnvSnapshot{
+					EnvSnapshot: &agentpb.EnvStateSnapshot{RunningEnvIds: envIDs},
+				},
+			})
+		}
+	}
+
+	// Concurrently: heartbeat sender + control-message receiver
 	errCh := make(chan error, 2)
 	go func() {
 		ticker := time.NewTicker(a.cfg.HeartbeatInterval)
@@ -150,13 +168,26 @@ func (a *Agent) runOnce(ctx context.Context) error {
 	}()
 	go func() {
 		for {
-			if _, err := stream.Recv(); err != nil {
+			msg, err := stream.Recv()
+			if err != nil {
 				if errors.Is(err, io.EOF) {
 					errCh <- nil
 				} else {
 					errCh <- err
 				}
 				return
+			}
+			if disp != nil {
+				switch p := msg.GetPayload().(type) {
+				case *agentpb.ControlMessage_CreateEnv:
+					go func(cmd *agentpb.CreateEnv) { _ = disp.HandleCreate(context.Background(), cmd) }(p.CreateEnv)
+				case *agentpb.ControlMessage_StopEnv:
+					go func(cmd *agentpb.StopEnv) { _ = disp.HandleStop(context.Background(), cmd) }(p.StopEnv)
+				case *agentpb.ControlMessage_StartEnv:
+					go func(cmd *agentpb.StartEnv) { _ = disp.HandleStart(context.Background(), cmd) }(p.StartEnv)
+				case *agentpb.ControlMessage_DeleteEnv:
+					go func(cmd *agentpb.DeleteEnv) { _ = disp.HandleDelete(context.Background(), cmd) }(p.DeleteEnv)
+				}
 			}
 		}
 	}()

@@ -14,8 +14,10 @@ import (
 
 	"github.com/paul/flexctl/internal/agentpb"
 	"github.com/paul/flexctl/internal/agentstream"
+	"github.com/paul/flexctl/internal/envs"
 	"github.com/paul/flexctl/internal/flexctlcli"
 	"github.com/paul/flexctl/internal/nodes"
+	"github.com/paul/flexctl/internal/sshkeys"
 	"github.com/paul/flexctl/internal/users"
 )
 
@@ -46,6 +48,15 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 			password_hash text NOT NULL,
 			created_at timestamptz NOT NULL DEFAULT now()
 		);
+		CREATE TABLE ssh_keys (
+			id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			name text NOT NULL,
+			public_key text NOT NULL,
+			fingerprint text NOT NULL,
+			created_at timestamptz NOT NULL DEFAULT now(),
+			UNIQUE(user_id, fingerprint)
+		);
 		CREATE TABLE pair_tokens (
 			token_hash text PRIMARY KEY,
 			user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -63,6 +74,33 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 			node_token_hash text NOT NULL UNIQUE,
 			last_seen_at timestamptz,
 			created_at timestamptz NOT NULL DEFAULT now(),
+			UNIQUE(owner_user_id, name)
+		);
+		CREATE TABLE image_templates (
+			id text PRIMARY KEY,
+			display_name text NOT NULL,
+			description text NOT NULL DEFAULT '',
+			image_ref text NOT NULL,
+			default_cmd text[] NOT NULL DEFAULT '{}',
+			enabled bool NOT NULL DEFAULT true,
+			created_at timestamptz NOT NULL DEFAULT now()
+		);
+		CREATE TABLE envs (
+			id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+			owner_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			node_id uuid NOT NULL REFERENCES nodes(id) ON DELETE RESTRICT,
+			template_id text NOT NULL REFERENCES image_templates(id),
+			name text NOT NULL,
+			hostname text NOT NULL,
+			status text NOT NULL DEFAULT 'creating',
+			status_message text NOT NULL DEFAULT '',
+			sidecar_container_id text NOT NULL DEFAULT '',
+			dev_container_id text NOT NULL DEFAULT '',
+			gpu_request int NOT NULL DEFAULT 1,
+			gpu_indices int[] NOT NULL DEFAULT '{}',
+			volume_name text NOT NULL,
+			created_at timestamptz NOT NULL DEFAULT now(),
+			updated_at timestamptz NOT NULL DEFAULT now(),
 			UNIQUE(owner_user_id, name)
 		);
 	`)
@@ -91,7 +129,9 @@ func TestAgentCommand_E2E(t *testing.T) {
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	grpcSrv := grpc.NewServer()
-	agentpb.RegisterAgentServer(grpcSrv, agentstream.NewServer(svc))
+	envsSvc := envs.NewService(pool)
+	keysSvc := sshkeys.NewService(pool)
+	agentpb.RegisterAgentServer(grpcSrv, agentstream.NewServer(svc, envsSvc, usersSvc, keysSvc, nil))
 	go func() { _ = grpcSrv.Serve(lis) }()
 	defer grpcSrv.GracefulStop()
 

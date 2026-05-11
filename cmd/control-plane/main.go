@@ -14,7 +14,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/google/uuid"
 	"google.golang.org/grpc"
 
 	"github.com/paul/flexctl/internal/agentpb"
@@ -90,12 +89,17 @@ func main() {
 	usersH := users.NewHandlers(usersSvc, signer, pool, pol)
 	nodesSvc := nodes.NewService(pool)
 	nodesH := nodes.NewHandlers(nodesSvc)
+	sshkeysSvc := sshkeys.NewService(pool)
 
 	envsSvc := envs.NewService(pool)
 	tplSvc := imagetemplates.NewService(pool)
 
-	// Stub dispatcher — Task 12에서 agentstream 기반 구현으로 교체
-	envDispatcher := &noopEnvDispatcher{}
+	sidecarImage := os.Getenv("FLEX_SIDECAR_IMAGE")
+	if sidecarImage == "" {
+		sidecarImage = "flex/sidecar:dev"
+	}
+	agentSrv := agentstream.NewServer(nodesSvc, envsSvc, usersSvc, sshkeysSvc, hsClient)
+	envDispatcher := agentstream.NewEnvsDispatcher(agentSrv, hsURL, sidecarImage)
 	envsH := envs.NewHandlers(envsSvc, envDispatcher)
 
 	imageTemplatesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +117,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
 		usersH.MountAuthed(r)
-		sshkeys.NewHandlers(sshkeys.NewService(pool)).Mount(r)
+		sshkeys.NewHandlers(sshkeysSvc).Mount(r)
 		nodesH.MountAuthed(r)
 		envsH.Mount(r)
 		r.Get("/v1/image-templates", imageTemplatesHandler)
@@ -143,7 +147,7 @@ func main() {
 		os.Exit(1)
 	}
 	grpcSrv := grpc.NewServer()
-	agentpb.RegisterAgentServer(grpcSrv, agentstream.NewServer(nodesSvc))
+	agentpb.RegisterAgentServer(grpcSrv, agentSrv)
 	go func() {
 		slog.Info("grpc serving", "addr", grpcAddr)
 		if err := grpcSrv.Serve(grpcLis); err != nil {
@@ -179,10 +183,3 @@ func main() {
 	grpcSrv.GracefulStop()
 }
 
-// noopEnvDispatcher는 Task 12에서 agentstream 기반 구현으로 교체된다.
-type noopEnvDispatcher struct{}
-
-func (noopEnvDispatcher) Create(_ context.Context, _ uuid.UUID) error { return nil }
-func (noopEnvDispatcher) Stop(_ context.Context, _ uuid.UUID) error   { return nil }
-func (noopEnvDispatcher) Start(_ context.Context, _ uuid.UUID) error  { return nil }
-func (noopEnvDispatcher) Delete(_ context.Context, _ uuid.UUID) error { return nil }
