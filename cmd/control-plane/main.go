@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -13,13 +14,17 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 
 	"github.com/paul/flexctl/internal/agentpb"
 	"github.com/paul/flexctl/internal/agentstream"
 	"github.com/paul/flexctl/internal/auth"
 	"github.com/paul/flexctl/internal/db"
+	"github.com/paul/flexctl/internal/envs"
 	"github.com/paul/flexctl/internal/headscale"
+	"github.com/paul/flexctl/internal/httperr"
+	"github.com/paul/flexctl/internal/imagetemplates"
 	"github.com/paul/flexctl/internal/nodes"
 	"github.com/paul/flexctl/internal/policy"
 	"github.com/paul/flexctl/internal/sshkeys"
@@ -85,12 +90,33 @@ func main() {
 	usersH := users.NewHandlers(usersSvc, signer, pool, pol)
 	nodesSvc := nodes.NewService(pool)
 	nodesH := nodes.NewHandlers(nodesSvc)
+
+	envsSvc := envs.NewService(pool)
+	tplSvc := imagetemplates.NewService(pool)
+
+	// Stub dispatcher — Task 12에서 agentstream 기반 구현으로 교체
+	envDispatcher := &noopEnvDispatcher{}
+	envsH := envs.NewHandlers(envsSvc, envDispatcher)
+
+	imageTemplatesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tpls, err := tplSvc.List(r.Context())
+		if err != nil {
+			slog.Error("image templates list", "err", err)
+			httperr.Write(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(tpls)
+	})
+
 	usersH.Mount(r)
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
 		usersH.MountAuthed(r)
 		sshkeys.NewHandlers(sshkeys.NewService(pool)).Mount(r)
 		nodesH.MountAuthed(r)
+		envsH.Mount(r)
+		r.Get("/v1/image-templates", imageTemplatesHandler)
 	})
 	nodesH.MountPublic(r)
 
@@ -152,3 +178,11 @@ func main() {
 	}
 	grpcSrv.GracefulStop()
 }
+
+// noopEnvDispatcher는 Task 12에서 agentstream 기반 구현으로 교체된다.
+type noopEnvDispatcher struct{}
+
+func (noopEnvDispatcher) Create(_ context.Context, _ uuid.UUID) error { return nil }
+func (noopEnvDispatcher) Stop(_ context.Context, _ uuid.UUID) error   { return nil }
+func (noopEnvDispatcher) Start(_ context.Context, _ uuid.UUID) error  { return nil }
+func (noopEnvDispatcher) Delete(_ context.Context, _ uuid.UUID) error { return nil }

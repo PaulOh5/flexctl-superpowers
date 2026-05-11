@@ -108,6 +108,48 @@ func (c *Client) GetPolicy(ctx context.Context) (string, error) {
 	return out.Policy, nil
 }
 
+type PreAuthKeyRequest struct {
+	User       string
+	Reusable   bool
+	Ephemeral  bool
+	Expiration time.Duration
+	ACLTags    []string
+}
+
+type PreAuthKey struct {
+	ID         string    `json:"id"`
+	Key        string    `json:"key"`
+	Ephemeral  bool      `json:"ephemeral"`
+	Reusable   bool      `json:"reusable"`
+	Expiration time.Time `json:"expiration"`
+	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type preAuthKeyHTTPReq struct {
+	User       string   `json:"user"`
+	Reusable   bool     `json:"reusable"`
+	Ephemeral  bool     `json:"ephemeral"`
+	Expiration string   `json:"expiration"` // RFC 3339
+	ACLTags    []string `json:"aclTags"`
+}
+
+type preAuthKeyHTTPResp struct {
+	PreAuthKey PreAuthKey `json:"preAuthKey"`
+}
+
+func (c *Client) CreatePreAuthKey(ctx context.Context, req PreAuthKeyRequest) (PreAuthKey, error) {
+	body := preAuthKeyHTTPReq{
+		User: req.User, Reusable: req.Reusable, Ephemeral: req.Ephemeral,
+		Expiration: time.Now().Add(req.Expiration).UTC().Format(time.RFC3339),
+		ACLTags:    req.ACLTags,
+	}
+	var out preAuthKeyHTTPResp
+	if err := c.do(ctx, http.MethodPost, "/api/v1/preauthkey", body, &out); err != nil {
+		return PreAuthKey{}, err
+	}
+	return out.PreAuthKey, nil
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in any, out any) error {
 	var body io.Reader
 	if in != nil {
