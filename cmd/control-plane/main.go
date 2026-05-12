@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net"
@@ -19,7 +20,10 @@ import (
 	"github.com/paul/flexctl/internal/agentstream"
 	"github.com/paul/flexctl/internal/auth"
 	"github.com/paul/flexctl/internal/db"
+	"github.com/paul/flexctl/internal/envs"
 	"github.com/paul/flexctl/internal/headscale"
+	"github.com/paul/flexctl/internal/httperr"
+	"github.com/paul/flexctl/internal/imagetemplates"
 	"github.com/paul/flexctl/internal/nodes"
 	"github.com/paul/flexctl/internal/policy"
 	"github.com/paul/flexctl/internal/sshkeys"
@@ -85,12 +89,38 @@ func main() {
 	usersH := users.NewHandlers(usersSvc, signer, pool, pol)
 	nodesSvc := nodes.NewService(pool)
 	nodesH := nodes.NewHandlers(nodesSvc)
+	sshkeysSvc := sshkeys.NewService(pool)
+
+	envsSvc := envs.NewService(pool)
+	tplSvc := imagetemplates.NewService(pool)
+
+	sidecarImage := os.Getenv("FLEX_SIDECAR_IMAGE")
+	if sidecarImage == "" {
+		sidecarImage = "flex/sidecar:dev"
+	}
+	agentSrv := agentstream.NewServer(nodesSvc, envsSvc, usersSvc, sshkeysSvc, hsClient)
+	envDispatcher := agentstream.NewEnvsDispatcher(agentSrv, hsURL, sidecarImage)
+	envsH := envs.NewHandlers(envsSvc, envDispatcher)
+
+	imageTemplatesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tpls, err := tplSvc.List(r.Context())
+		if err != nil {
+			slog.Error("image templates list", "err", err)
+			httperr.Write(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(tpls)
+	})
+
 	usersH.Mount(r)
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
 		usersH.MountAuthed(r)
-		sshkeys.NewHandlers(sshkeys.NewService(pool)).Mount(r)
+		sshkeys.NewHandlers(sshkeysSvc).Mount(r)
 		nodesH.MountAuthed(r)
+		envsH.Mount(r)
+		r.Get("/v1/image-templates", imageTemplatesHandler)
 	})
 	nodesH.MountPublic(r)
 
@@ -117,7 +147,7 @@ func main() {
 		os.Exit(1)
 	}
 	grpcSrv := grpc.NewServer()
-	agentpb.RegisterAgentServer(grpcSrv, agentstream.NewServer(nodesSvc))
+	agentpb.RegisterAgentServer(grpcSrv, agentSrv)
 	go func() {
 		slog.Info("grpc serving", "addr", grpcAddr)
 		if err := grpcSrv.Serve(grpcLis); err != nil {
@@ -152,3 +182,4 @@ func main() {
 	}
 	grpcSrv.GracefulStop()
 }
+

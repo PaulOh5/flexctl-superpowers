@@ -105,3 +105,23 @@ func TestSetPolicy_Invalid(t *testing.T) {
 	err := c.SetPolicy(context.Background(), `{"this is not valid hujson`)
 	require.Error(t, err, "headscale should reject malformed policy")
 }
+
+func TestCreatePreAuthKey_Ephemeral(t *testing.T) {
+	baseURL, apiKey := startHeadscale(t)
+	c := headscale.NewClient(baseURL, apiKey, 5*time.Second)
+	ctx := context.Background()
+
+	_, err := c.CreateUser(ctx, "paul")
+	require.NoError(t, err)
+
+	key, err := c.CreatePreAuthKey(ctx, headscale.PreAuthKeyRequest{
+		User:       "paul",
+		Reusable:   false,
+		Ephemeral:  true,
+		Expiration: 24 * time.Hour,
+		ACLTags:    []string{"tag:env-paul"},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, key.Key)
+	require.True(t, key.Ephemeral)
+}

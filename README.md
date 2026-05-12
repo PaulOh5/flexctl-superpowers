@@ -51,6 +51,13 @@ testcontainers가 임시 Postgres를 띄우므로 docker daemon이 필요.
 | DELETE | `/v1/me/ssh-keys/{id}` | session | SSH 키 삭제 |
 | POST | `/v1/nodes/pair-token` | session | 1회용 페어링 토큰 발급 (10분 만료) |
 | POST | `/v1/nodes/pair` | token | 페어링 토큰 사용 + 노드 등록 |
+| GET | `/v1/image-templates` | session | 사용 가능한 dev 이미지 템플릿 목록 |
+| GET | `/v1/envs` | session | 내 환경 목록 |
+| POST | `/v1/envs` | session | 환경 생성 (사이드카+dev 컨테이너 묶음) |
+| GET | `/v1/envs/{id}` | session | 환경 단건 조회 |
+| POST | `/v1/envs/{id}/stop` | session | 환경 중지 |
+| POST | `/v1/envs/{id}/start` | session | 환경 시작 |
+| DELETE | `/v1/envs/{id}` | session | 환경 삭제 (볼륨 포함) |
 
 ## flexctl agent
 
@@ -102,3 +109,43 @@ GPU 서버에 설치할 단일 Go 바이너리.
 로그:
 
     journalctl -u flexctl-agent -f
+
+## 환경 생성 + 사이드카 빌드
+
+### 사이드카 + dev 이미지 빌드 (운영자 1회)
+
+GPU 서버에 다음 두 이미지가 로컬에 있어야 함 (Plan 4 MVP — registry push 없음):
+
+    make build-flexctl       # bin/flexctl 빌드 (사이드카 Dockerfile이 COPY)
+    make sidecar-image       # → flex/sidecar:dev (Alpine + tailscaled + flexctl sidecar)
+    make dev-image           # → flex/dev-cuda-base:dev (nvidia/cuda + sshd)
+
+이 두 이미지는 agent가 동작하는 노드에 존재해야 함. dev 머신에서 빌드 후 GPU 서버로 push하거나, GPU 서버에서 직접 빌드.
+
+### 환경 생성 e2e
+
+페어링된 노드가 있다고 가정:
+
+    curl -fsS -X POST http://localhost:8080/v1/envs \
+      -H 'content-type: application/json' \
+      -b /tmp/c.txt \
+      -d '{"node_id":"<uuid>","template_id":"cuda-base","name":"vllm","gpu_request":1}'
+    # → 202 Accepted + env JSON (status: "creating")
+
+    # 잠시 후 status 확인:
+    curl -s -b /tmp/c.txt http://localhost:8080/v1/envs | jq
+    # → [{ "status": "running", "hostname": "paul-vllm", ... }]
+
+    # 노드에서 컨테이너 두 개 확인:
+    docker ps --filter label=flexctl.env_id=<env-id>
+    # → flex-net-<id> (사이드카) + flex-env-<id> (dev)
+
+SSH 접속은 **Plan 5 (flexctl client)**가 완료되면 가능.
+
+### 중지 / 시작 / 삭제
+
+    curl -X POST -b /tmp/c.txt http://localhost:8080/v1/envs/<id>/stop
+    curl -X POST -b /tmp/c.txt http://localhost:8080/v1/envs/<id>/start
+    curl -X DELETE -b /tmp/c.txt http://localhost:8080/v1/envs/<id>
+
+Stop은 컨테이너만 정지 (볼륨 유지). Delete는 볼륨까지 제거 — 데이터 영구 손실.
