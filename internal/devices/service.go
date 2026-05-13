@@ -91,6 +91,9 @@ func (s *Service) Pair(ctx context.Context, userID uuid.UUID, name string) (Pair
 		userID, name, hostname,
 	).Scan(&d.ID, &d.UserID, &d.Name, &d.Hostname, &d.CreatedAt, &d.LastSeenAt)
 	if err != nil {
+		// ErrConflict is unreachable in practice: hostname uniqueness follows
+		// from slug uniqueness, and (user_id, name) collisions are absorbed by
+		// the ON CONFLICT clause above. Kept as defense-in-depth.
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return PairResult{}, ErrConflict
@@ -170,7 +173,10 @@ func (s *Service) Delete(ctx context.Context, userID, deviceID uuid.UUID) error 
 		return fmt.Errorf("user: %w", err)
 	}
 
-	// Best-effort Headscale node cleanup.
+	// Headscale cleanup is best-effort. The DB row is authoritative; if
+	// ListNodes or DeleteNode fails, any orphan Headscale node will be
+	// reconciled on the user's next `flexctl login` (which re-pairs and
+	// supersedes stale entries by hostname).
 	nodes, err := s.hs.ListNodes(ctx, u.Slug)
 	if err == nil {
 		for _, n := range nodes {

@@ -211,7 +211,9 @@ func TestList_ScopedToUser(t *testing.T) {
 	require.Len(t, list2, 1)
 }
 
-func TestDelete_RemovesDBRowAndHeadscaleNode(t *testing.T) {
+// Note: the device hasn't actually registered with Headscale in this test
+// (that would require `tailscale up`), so only the DB row deletion is verified.
+func TestDelete_RemovesDBRow(t *testing.T) {
 	ctx, pool, hs, usersSvc := setup(t)
 
 	u, err := usersSvc.Signup(ctx, "paul@example.com", "paul", "correct-horse-battery")
