@@ -161,7 +161,10 @@ func sanitizeDeviceName(s string) string {
 			out = append(out, c)
 		}
 	}
-	if len(out) == 0 {
+	// nameRe requires at least 2 chars and start/end with [a-z0-9].
+	// Fall back to "device" when sanitized result is too short, all-hyphen,
+	// or starts/ends with hyphen.
+	if len(out) < 2 || out[0] == '-' || out[len(out)-1] == '-' {
 		return "device"
 	}
 	return string(out)

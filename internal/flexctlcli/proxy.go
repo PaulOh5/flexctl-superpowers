@@ -64,10 +64,15 @@ func startWithRetry(ctx context.Context, cfg ClientConfig) (*tsnet.Server, error
 			return srv, nil
 		}
 		if attempt == 0 {
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
 			continue
 		}
 		return nil, fmt.Errorf("tsnet start (another flexctl proxy may be initializing): %w", err)
 	}
-	return nil, nil
+	// Unreachable: loop body always returns.
+	return nil, fmt.Errorf("tsnet start: unreachable")
 }

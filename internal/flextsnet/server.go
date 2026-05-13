@@ -2,6 +2,7 @@ package flextsnet
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -68,5 +69,10 @@ func Pipe(conn net.Conn, stdin io.Reader, stdout io.Writer) error {
 	// Wait for one side to finish; the other will unblock from the Close above.
 	err := <-errCh
 	<-errCh
+	// Normal end-of-session: server closed the conn, our reader sees EOF or
+	// "use of closed network connection". Don't surface as an error.
+	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
 	return err
 }
