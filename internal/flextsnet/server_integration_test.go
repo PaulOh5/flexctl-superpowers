@@ -237,13 +237,14 @@ func TestTsnet_TwoNodesDialEachOther(t *testing.T) {
 	require.NoError(t, err)
 	defer conn.Close()
 
-	buf := make([]byte, 64)
-	n, _ := conn.Read(buf)
-	require.Equal(t, "hello from B", string(buf[:n]))
+	got, err := io.ReadAll(conn)
+	require.NoError(t, err)
+	require.Equal(t, "hello from B", string(got))
 }
 
 // TestTsnet_CrossUserACLBlocks verifies that two tsnet nodes in different users
-// (and different ACL tag namespaces) cannot dial each other.
+// (and different ACL tag namespaces) cannot dial each other, while confirming
+// that same-user dial still works (positive + negative control pair).
 func TestTsnet_CrossUserACLBlocks(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -267,7 +268,12 @@ func TestTsnet_CrossUserACLBlocks(t *testing.T) {
   ]
 }`))
 
-	keyP, err := hs.CreatePreAuthKey(ctx, headscale.PreAuthKeyRequest{
+	// 3 nodes: paul-A, paul-B (same user), alice-Y (cross user).
+	keyPA, err := hs.CreatePreAuthKey(ctx, headscale.PreAuthKeyRequest{
+		User: "paul", Expiration: time.Hour, ACLTags: []string{"tag:device-paul"},
+	})
+	require.NoError(t, err)
+	keyPB, err := hs.CreatePreAuthKey(ctx, headscale.PreAuthKeyRequest{
 		User: "paul", Expiration: time.Hour, ACLTags: []string{"tag:device-paul"},
 	})
 	require.NoError(t, err)
@@ -276,31 +282,68 @@ func TestTsnet_CrossUserACLBlocks(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	srvP, err := flextsnet.Start(ctx, flextsnet.Config{
-		StateDir:   t.TempDir(),
-		Hostname:   "paul-device-x",
-		AuthKey:    keyP.Key,
-		ControlURL: hsURL,
+	srvPA, err := flextsnet.Start(ctx, flextsnet.Config{
+		StateDir: t.TempDir(), Hostname: "paul-device-a",
+		AuthKey: keyPA.Key, ControlURL: hsURL,
 	})
 	require.NoError(t, err)
-	defer srvP.Close()
+	defer srvPA.Close()
 
-	srvA, err := flextsnet.Start(ctx, flextsnet.Config{
-		StateDir:   t.TempDir(),
-		Hostname:   "alice-device-y",
-		AuthKey:    keyA.Key,
-		ControlURL: hsURL,
+	srvPB, err := flextsnet.Start(ctx, flextsnet.Config{
+		StateDir: t.TempDir(), Hostname: "paul-device-b",
+		AuthKey: keyPB.Key, ControlURL: hsURL,
 	})
 	require.NoError(t, err)
-	defer srvA.Close()
+	defer srvPB.Close()
 
-	ln, err := srvA.Listen("tcp", ":9090")
+	srvAlice, err := flextsnet.Start(ctx, flextsnet.Config{
+		StateDir: t.TempDir(), Hostname: "alice-device-y",
+		AuthKey: keyA.Key, ControlURL: hsURL,
+	})
 	require.NoError(t, err)
-	defer ln.Close()
-	go func() { _, _ = ln.Accept() }()
+	defer srvAlice.Close()
 
-	dctx, dcancel := context.WithTimeout(ctx, 5*time.Second)
+	// Listeners: paul-B and alice-Y both listen on :9090.
+	lnPB, err := srvPB.Listen("tcp", ":9090")
+	require.NoError(t, err)
+	defer lnPB.Close()
+	go func() {
+		c, err := lnPB.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_, _ = c.Write([]byte("paul-B ok"))
+	}()
+
+	lnAlice, err := srvAlice.Listen("tcp", ":9090")
+	require.NoError(t, err)
+	defer lnAlice.Close()
+	go func() {
+		c, err := lnAlice.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_, _ = c.Write([]byte("alice ok"))
+	}()
+
+	// Positive control: paul-A → paul-B must succeed (same-user ACL allows it).
+	// 30s timeout absorbs slow node startup; success proves the environment
+	// itself is capable of dialing — not just blocking everything.
+	pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer pcancel()
+	connOK, err := srvPA.Dial(pctx, "tcp", net.JoinHostPort("paul-device-b", "9090"))
+	require.NoError(t, err, "same-user dial must succeed (sanity check)")
+	got, _ := io.ReadAll(connOK)
+	connOK.Close()
+	require.Equal(t, "paul-B ok", string(got))
+
+	// Negative control: paul-A → alice-Y must fail because the ACL only permits
+	// same-tag traffic. Since the positive control passed, any failure here is
+	// unambiguously due to ACL enforcement, not a broken environment.
+	dctx, dcancel := context.WithTimeout(ctx, 10*time.Second)
 	defer dcancel()
-	_, err = srvP.Dial(dctx, "tcp", net.JoinHostPort("alice-device-y", "9090"))
+	_, err = srvPA.Dial(dctx, "tcp", net.JoinHostPort("alice-device-y", "9090"))
 	require.Error(t, err, "ACL must block cross-user dial")
 }
