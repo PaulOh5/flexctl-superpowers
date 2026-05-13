@@ -15,6 +15,7 @@ func NewRootCmd() *cobra.Command {
 		SilenceErrors: false,
 	}
 	root.AddCommand(NewLoginCmd())
+	root.AddCommand(NewLogoutCmd())
 	root.AddCommand(NewJoinCmd())
 	root.AddCommand(NewAgentCmd())
 	root.AddCommand(NewSidecarCmd())
