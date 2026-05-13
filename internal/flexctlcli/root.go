@@ -21,6 +21,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(NewSidecarCmd())
 	root.AddCommand(NewKeyCmd())
 	root.AddCommand(NewEnvCmd())
+	root.AddCommand(NewSSHCmd())
 	return root
 }
 
