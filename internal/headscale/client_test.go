@@ -125,3 +125,27 @@ func TestCreatePreAuthKey_Ephemeral(t *testing.T) {
 	require.NotEmpty(t, key.Key)
 	require.True(t, key.Ephemeral)
 }
+
+func TestListNodes_EmptyWhenNoNodes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	baseURL, apiKey := startHeadscale(t)
+	c := headscale.NewClient(baseURL, apiKey, 5*time.Second)
+
+	_, err := c.CreateUser(ctx, "paul")
+	require.NoError(t, err)
+
+	got, err := c.ListNodes(ctx, "paul")
+	require.NoError(t, err)
+	require.Empty(t, got)
+}
+
+func TestDeleteNode_UnknownID_Returns404Error(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	baseURL, apiKey := startHeadscale(t)
+	c := headscale.NewClient(baseURL, apiKey, 5*time.Second)
+
+	err := c.DeleteNode(ctx, "9999999")
+	require.Error(t, err)
+}

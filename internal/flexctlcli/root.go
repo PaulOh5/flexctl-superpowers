@@ -14,9 +14,15 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
+	root.AddCommand(NewLoginCmd())
+	root.AddCommand(NewLogoutCmd())
 	root.AddCommand(NewJoinCmd())
 	root.AddCommand(NewAgentCmd())
 	root.AddCommand(NewSidecarCmd())
+	root.AddCommand(NewKeyCmd())
+	root.AddCommand(NewEnvCmd())
+	root.AddCommand(NewSSHCmd())
+	root.AddCommand(NewProxyCmd())
 	return root
 }
 

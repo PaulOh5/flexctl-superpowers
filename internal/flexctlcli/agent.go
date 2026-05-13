@@ -10,6 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/paul/flexctl/internal/envdocker"
+	"github.com/paul/flexctl/internal/envlifecycle"
 	"github.com/paul/flexctl/internal/flexctlagent"
 	"github.com/paul/flexctl/internal/gpuinfo"
 )
@@ -30,17 +32,32 @@ func NewAgentCmd() *cobra.Command {
 			if cfg.GRPCAddress == "" {
 				return errors.New("config has empty grpc_address; re-run `flexctl join` with --grpc-address")
 			}
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			dockerClient, err := envdocker.NewRealDockerClient()
+			if err != nil {
+				return fmt.Errorf("docker client: %w", err)
+			}
+			detector := gpuinfo.NewNvidiaDetector()
+			gpus := detector.Detect(ctx)
+			indices := make([]int, len(gpus))
+			for i := range gpus {
+				indices[i] = i
+			}
+			gpuAllocator := envlifecycle.NewGPUAllocator(indices)
+
 			a := flexctlagent.New(flexctlagent.Config{
 				GRPCAddress:       cfg.GRPCAddress,
 				NodeToken:         cfg.NodeToken,
 				AgentVersion:      Version,
 				HeartbeatInterval: heartbeat,
-				GPUDetector:       gpuinfo.NewNvidiaDetector(),
+				GPUDetector:       detector,
+				DockerClient:      dockerClient,
+				GPUAllocator:      gpuAllocator,
 			})
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
 			return a.Run(ctx)
 		},
 	}

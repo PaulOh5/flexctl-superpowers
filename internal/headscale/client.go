@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -24,6 +25,10 @@ func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
 		http:    &http.Client{Timeout: timeout},
 	}
 }
+
+// BaseURL returns the URL the client was constructed with. Used by callers
+// that need to pass the same Headscale URL to other components (e.g. tsnet).
+func (c *Client) BaseURL() string { return c.baseURL }
 
 var (
 	ErrUserAlreadyExists = errors.New("headscale user already exists")
@@ -148,6 +153,39 @@ func (c *Client) CreatePreAuthKey(ctx context.Context, req PreAuthKeyRequest) (P
 		return PreAuthKey{}, err
 	}
 	return out.PreAuthKey, nil
+}
+
+type Node struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	GivenName   string   `json:"given_name"`
+	User        User     `json:"user"`
+	IPAddresses []string `json:"ip_addresses"`
+}
+
+type listNodesResp struct {
+	Nodes []Node `json:"nodes"`
+}
+
+// ListNodes returns all Headscale nodes for a given user (by name). Empty
+// user filter returns all nodes (admin scope). Used by devices.Service to
+// look up a device's Headscale node ID before deletion.
+func (c *Client) ListNodes(ctx context.Context, user string) ([]Node, error) {
+	path := "/api/v1/node"
+	if user != "" {
+		path += "?user=" + url.QueryEscape(user)
+	}
+	var out listNodesResp
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Nodes, nil
+}
+
+// DeleteNode removes a Headscale node by its numeric ID (as returned by
+// ListNodes). Used by flexctl logout to drop a user device from the tailnet.
+func (c *Client) DeleteNode(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/v1/node/"+id, nil, nil)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in any, out any) error {
