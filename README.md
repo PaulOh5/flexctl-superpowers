@@ -149,3 +149,57 @@ SSH 접속은 **Plan 5 (flexctl client)**가 완료되면 가능.
     curl -X DELETE -b /tmp/c.txt http://localhost:8080/v1/envs/<id>
 
 Stop은 컨테이너만 정지 (볼륨 유지). Delete는 볼륨까지 제거 — 데이터 영구 손실.
+
+## Connect to an env from your laptop
+
+```bash
+# 1. Install flexctl on your laptop (same binary as the GPU agent).
+sudo install bin/flexctl /usr/local/bin/flexctl
+
+# 2. Log in. Uploads ~/.ssh/id_ed25519.pub if present, pairs this device, joins the tailnet, edits ~/.ssh/config.
+flexctl login --control-plane https://flexctl.example.com
+
+# 3. See your envs.
+flexctl env list
+
+# 4. SSH.
+flexctl ssh vllm-train
+# or, equivalently:
+ssh dev@paul-vllm-train.flex
+```
+
+### SSH key management
+
+```bash
+flexctl key add ~/.ssh/id_ed25519.pub --name laptop-ed25519
+flexctl key list
+flexctl key rm <key-id>
+```
+
+Keys are snapshotted into each env at `flexctl env create` time. Add a key, then restart the env to pick it up.
+
+### Logout
+
+```bash
+flexctl logout
+```
+
+Removes the device from Headscale, drops the session, cleans `~/.config/flexctl/` and the marker block in `~/.ssh/config`.
+
+### Manual e2e checklist (GPU machine)
+
+1. control-plane up, Headscale up, a node running `flexctl agent`.
+2. Sign up: `curl -X POST https://flexctl.example.com/v1/auth/signup -d '{"email":"p@x.com","slug":"paul","password":"supersecret123"}'`.
+3. From the laptop: `flexctl login --control-plane https://flexctl.example.com --email p@x.com`.
+4. Build images on the GPU node: `make sidecar-image && make dev-image`.
+5. Create an env (via curl): `POST /v1/envs {"name":"cuda","template_id":"cuda-base","node_id":"<uuid>","gpu_request":1}`.
+6. Wait for `flexctl env list` to show `running`.
+7. `flexctl ssh cuda` → `nvidia-smi` should print the GPU.
+
+### Endpoints added by Plan 5
+
+| Method | Path | Description |
+|---|---|---|
+| POST | /v1/devices/pair | Register this device, get a Headscale pre-auth key |
+| GET | /v1/devices | List your devices |
+| DELETE | /v1/devices/{id} | Drop a device + its Headscale node |
