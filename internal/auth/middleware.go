@@ -38,3 +38,9 @@ func UserIDFrom(ctx context.Context) (uuid.UUID, bool) {
 	v, ok := ctx.Value(userIDKey).(uuid.UUID)
 	return v, ok
 }
+
+// WithUserID injects uid into ctx. Used by tests and middleware that set the
+// authenticated user without going through a signed cookie.
+func WithUserID(ctx context.Context, uid uuid.UUID) context.Context {
+	return context.WithValue(ctx, userIDKey, uid)
+}
