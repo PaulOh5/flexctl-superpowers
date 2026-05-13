@@ -20,6 +20,7 @@ import (
 	"github.com/paul/flexctl/internal/agentstream"
 	"github.com/paul/flexctl/internal/auth"
 	"github.com/paul/flexctl/internal/db"
+	"github.com/paul/flexctl/internal/devices"
 	"github.com/paul/flexctl/internal/envs"
 	"github.com/paul/flexctl/internal/headscale"
 	"github.com/paul/flexctl/internal/httperr"
@@ -91,6 +92,12 @@ func main() {
 	nodesH := nodes.NewHandlers(nodesSvc)
 	sshkeysSvc := sshkeys.NewService(pool)
 
+	devicesSvc := devices.NewService(pool, hsClient, usersSvc, devices.ServiceConfig{
+		HeadscaleClientURL: envOr("FLEX_HEADSCALE_CLIENT_URL", hsURL),
+		TailnetDomain:      envOr("FLEX_TAILNET_DOMAIN", "flex"),
+	})
+	devicesH := devices.NewHandlers(devicesSvc)
+
 	envsSvc := envs.NewService(pool)
 	tplSvc := imagetemplates.NewService(pool)
 
@@ -120,6 +127,7 @@ func main() {
 		sshkeys.NewHandlers(sshkeysSvc).Mount(r)
 		nodesH.MountAuthed(r)
 		envsH.Mount(r)
+		devicesH.Mount(r)
 		r.Get("/v1/image-templates", imageTemplatesHandler)
 	})
 	nodesH.MountPublic(r)
@@ -181,5 +189,12 @@ func main() {
 		slog.Error("shutdown error", "err", err)
 	}
 	grpcSrv.GracefulStop()
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
 
