@@ -154,9 +154,9 @@ func (c *Client) CreatePreAuthKey(ctx context.Context, req PreAuthKeyRequest) (P
 type Node struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
-	GivenName   string   `json:"givenName"`
+	GivenName   string   `json:"given_name"`
 	User        User     `json:"user"`
-	IPAddresses []string `json:"ipAddresses"`
+	IPAddresses []string `json:"ip_addresses"`
 }
 
 type listNodesResp struct {

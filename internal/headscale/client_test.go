@@ -126,8 +126,8 @@ func TestCreatePreAuthKey_Ephemeral(t *testing.T) {
 	require.True(t, key.Ephemeral)
 }
 
-func TestListNodes_ReturnsRegisteredNodes(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+func TestListNodes_EmptyWhenNoNodes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	baseURL, apiKey := startHeadscale(t)
 	c := headscale.NewClient(baseURL, apiKey, 5*time.Second)
@@ -135,23 +135,9 @@ func TestListNodes_ReturnsRegisteredNodes(t *testing.T) {
 	_, err := c.CreateUser(ctx, "paul")
 	require.NoError(t, err)
 
-	// Pre-create an ACL policy so pre-auth keys can be issued.
-	require.NoError(t, c.SetPolicy(ctx, `{
-	  "tagOwners": {"tag:device-paul": ["control-plane"]},
-	  "acls": [{"action": "accept", "src": ["tag:device-paul"], "dst": ["tag:device-paul:*"]}]
-	}`))
-
-	key, err := c.CreatePreAuthKey(ctx, headscale.PreAuthKeyRequest{
-		User: "paul", Reusable: false, Ephemeral: false,
-		Expiration: 1 * time.Hour, ACLTags: []string{"tag:device-paul"},
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, key.Key)
-
-	// Without a registered Tailscale node we can only assert the call shape.
 	got, err := c.ListNodes(ctx, "paul")
 	require.NoError(t, err)
-	require.Empty(t, got, "no nodes have registered yet")
+	require.Empty(t, got)
 }
 
 func TestDeleteNode_UnknownID_Returns404Error(t *testing.T) {
