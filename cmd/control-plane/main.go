@@ -92,8 +92,15 @@ func main() {
 	nodesH := nodes.NewHandlers(nodesSvc)
 	sshkeysSvc := sshkeys.NewService(pool)
 
+	// External Headscale URL — used both by user laptops (tsnet ControlURL via
+	// devices.Pair response) and by sidecar containers on GPU nodes (CreateEnv
+	// HeadscaleUrl). Falls back to the internal hsURL if not set, but in any
+	// real deployment control-plane/agent are on different hosts and this MUST
+	// be the externally reachable URL.
+	hsClientURL := envOr("FLEX_HEADSCALE_CLIENT_URL", hsURL)
+
 	devicesSvc := devices.NewService(pool, hsClient, usersSvc, devices.ServiceConfig{
-		HeadscaleClientURL: envOr("FLEX_HEADSCALE_CLIENT_URL", hsURL),
+		HeadscaleClientURL: hsClientURL,
 		TailnetDomain:      envOr("FLEX_TAILNET_DOMAIN", "flex"),
 	})
 	devicesH := devices.NewHandlers(devicesSvc)
@@ -106,7 +113,7 @@ func main() {
 		sidecarImage = "flex/sidecar:dev"
 	}
 	agentSrv := agentstream.NewServer(nodesSvc, envsSvc, usersSvc, sshkeysSvc, hsClient)
-	envDispatcher := agentstream.NewEnvsDispatcher(agentSrv, hsURL, sidecarImage)
+	envDispatcher := agentstream.NewEnvsDispatcher(agentSrv, hsClientURL, sidecarImage)
 	envsH := envs.NewHandlers(envsSvc, envDispatcher)
 
 	imageTemplatesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
