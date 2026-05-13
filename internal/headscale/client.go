@@ -26,6 +26,10 @@ func NewClient(baseURL, apiKey string, timeout time.Duration) *Client {
 	}
 }
 
+// BaseURL returns the URL the client was constructed with. Used by callers
+// that need to pass the same Headscale URL to other components (e.g. tsnet).
+func (c *Client) BaseURL() string { return c.baseURL }
+
 var (
 	ErrUserAlreadyExists = errors.New("headscale user already exists")
 	ErrUserNotFound      = errors.New("headscale user not found")
