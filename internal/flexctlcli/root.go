@@ -22,6 +22,7 @@ func NewRootCmd() *cobra.Command {
 	root.AddCommand(NewKeyCmd())
 	root.AddCommand(NewEnvCmd())
 	root.AddCommand(NewSSHCmd())
+	root.AddCommand(NewProxyCmd())
 	return root
 }
 
