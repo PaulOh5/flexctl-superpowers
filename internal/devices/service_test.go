@@ -157,6 +157,12 @@ func TestPair_CreatesDeviceAndPreAuthKey(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, u.ID, got.UserID)
 	require.Equal(t, "macbook", got.Name)
+
+	// Idempotent on (user, name): same device row, new pre-auth key.
+	res2, err := svc.Pair(ctx, u.ID, "macbook")
+	require.NoError(t, err)
+	require.Equal(t, res.Device.ID, res2.Device.ID)
+	require.NotEqual(t, res.PreauthKey, res2.PreauthKey)
 }
 
 func TestPair_RejectsInvalidName(t *testing.T) {
