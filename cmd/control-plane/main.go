@@ -128,6 +128,10 @@ func main() {
 	}
 	agentSrv := agentstream.NewServer(nodesSvc, envsSvc, usersSvc, sshkeysSvc, hsClient)
 	envDispatcher := agentstream.NewEnvsDispatcher(agentSrv, hsClientURL, sidecarImage)
+	if os.Getenv("FLEX_E2E_AUTOACK") == "1" {
+		slog.Warn("FLEX_E2E_AUTOACK=1 — env dispatcher bypasses agent stream and marks running immediately. This is for e2e tests ONLY. Disable in production.")
+		envDispatcher.SetAutoack(true)
+	}
 	envsH := envs.NewHandlers(envsSvc, envDispatcher)
 
 	imageTemplatesHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
