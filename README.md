@@ -203,3 +203,40 @@ Removes the device from Headscale, drops the session, cleans `~/.config/flexctl/
 | POST | /v1/devices/pair | Register this device, get a Headscale pre-auth key |
 | GET | /v1/devices | List your devices |
 | DELETE | /v1/devices/{id} | Drop a device + its Headscale node |
+
+## Web UI
+
+Plan 6 추가: control-plane이 React SPA를 같은 8080 포트에서 서빙한다.
+
+### 개발
+
+```bash
+make web-dev           # Vite dev server (5173), /v1 proxy → localhost:8080
+# 별도 터미널에서
+make build-control-plane && ./bin/control-plane
+```
+
+브라우저에서 http://localhost:5173 (HMR 활성). API는 http://localhost:8080.
+
+### Production build
+
+```bash
+make build-control-plane    # npm run build → internal/webui/dist → go:embed
+./bin/control-plane         # 단일 바이너리, http://<host>:8080 에서 SPA + API
+```
+
+### E2E (Playwright)
+
+```bash
+make e2e        # 전체: docker-compose.e2e + migrate + control-plane + playwright
+make e2e-down   # 정리
+```
+
+골든 패스 1개: signup → env create → SSH 명령 노출 검증. `FLEX_E2E_AUTOACK=1`로 dispatcher가 agent 대신 즉시 status running 마킹.
+
+### 보안 환경 변수
+
+| 이름 | 용도 |
+|---|---|
+| `FLEX_ALLOWED_ORIGINS` | comma-separated 허용 Origin (production은 외부 URL 명시). 비어있으면 dev 모드(검사 skip). |
+| `FLEX_E2E_AUTOACK` | `1`이면 env dispatcher가 agent stream 우회 + 즉시 status running. **production 절대 금지.** |

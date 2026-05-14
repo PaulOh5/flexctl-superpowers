@@ -9,3 +9,8 @@
 web/node_modules/
 web/dist/
 internal/webui/dist/
+
+# Plan 6 Web UI
+web/test-results/
+web/playwright-report/
+.env.e2e
