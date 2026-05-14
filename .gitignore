@@ -6,3 +6,6 @@
 .env.local
 .idea/
 .vscode/
+web/node_modules/
+web/dist/
+internal/webui/dist/
