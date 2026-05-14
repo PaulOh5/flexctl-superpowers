@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,8 +28,10 @@ import (
 	"github.com/paul/flexctl/internal/imagetemplates"
 	"github.com/paul/flexctl/internal/nodes"
 	"github.com/paul/flexctl/internal/policy"
+	"github.com/paul/flexctl/internal/spa"
 	"github.com/paul/flexctl/internal/sshkeys"
 	"github.com/paul/flexctl/internal/users"
+	"github.com/paul/flexctl/internal/webui"
 )
 
 func main() {
@@ -99,6 +102,17 @@ func main() {
 	// be the externally reachable URL.
 	hsClientURL := envOr("FLEX_HEADSCALE_CLIENT_URL", hsURL)
 
+	// Allowed origins for RequireSameOrigin middleware. Comma-separated list.
+	// Leave empty (default) to disable origin checking (dev/test mode).
+	var allowedOrigins []string
+	if v := os.Getenv("FLEX_ALLOWED_ORIGINS"); v != "" {
+		for _, o := range strings.Split(v, ",") {
+			if t := strings.TrimSpace(o); t != "" {
+				allowedOrigins = append(allowedOrigins, t)
+			}
+		}
+	}
+
 	devicesSvc := devices.NewService(pool, hsClient, usersSvc, devices.ServiceConfig{
 		HeadscaleClientURL: hsClientURL,
 		TailnetDomain:      envOr("FLEX_TAILNET_DOMAIN", "flex"),
@@ -130,6 +144,7 @@ func main() {
 	usersH.Mount(r)
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireSession(signer))
+		r.Use(auth.RequireSameOrigin(allowedOrigins))
 		usersH.MountAuthed(r)
 		sshkeys.NewHandlers(sshkeysSvc).Mount(r)
 		nodesH.MountAuthed(r)
@@ -151,6 +166,9 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	spaHandler := spa.New(webui.Assets())
+	r.NotFound(spaHandler.ServeHTTP)
 
 	grpcAddr := os.Getenv("FLEX_GRPC_ADDR")
 	if grpcAddr == "" {
