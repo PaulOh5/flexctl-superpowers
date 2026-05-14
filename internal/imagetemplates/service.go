@@ -12,11 +12,11 @@ import (
 var ErrNotFound = errors.New("image template not found")
 
 type Template struct {
-	ID          string
-	DisplayName string
-	Description string
-	ImageRef    string
-	DefaultCmd  []string
+	ID          string   `json:"id"`
+	DisplayName string   `json:"display_name,omitempty"`
+	Description string   `json:"description,omitempty"`
+	ImageRef    string   `json:"image_ref"`
+	DefaultCmd  []string `json:"default_cmd"`
 }
 
 type Service struct {
