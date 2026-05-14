@@ -22,6 +22,7 @@ func NewHandlers(svc *Service) *Handlers { return &Handlers{svc: svc} }
 // MountAuthed mounts routes that require a session cookie.
 func (h *Handlers) MountAuthed(r chi.Router) {
 	r.Post("/v1/nodes/pair-token", h.createPairToken)
+	r.Get("/v1/nodes", h.list)
 }
 
 // MountPublic mounts routes accessible without a session (token-authenticated).
@@ -98,4 +99,36 @@ func (h *Handlers) pair(w http.ResponseWriter, r *http.Request) {
 		NodeID:    node.ID.String(),
 		NodeToken: nodeToken,
 	})
+}
+
+type nodeResp struct {
+	ID           string     `json:"id"`
+	Name         string     `json:"name"`
+	Status       string     `json:"status"`
+	AgentVersion string     `json:"agent_version"`
+	GPUInfo      any        `json:"gpu_info,omitempty"`
+	LastSeenAt   *time.Time `json:"last_seen_at,omitempty"`
+}
+
+func (h *Handlers) list(w http.ResponseWriter, r *http.Request) {
+	uid, _ := auth.UserIDFrom(r.Context())
+	got, err := h.svc.ListByOwner(r.Context(), uid)
+	if err != nil {
+		slog.Error("nodes.ListByOwner", "err", err)
+		httperr.Write(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	out := make([]nodeResp, 0, len(got))
+	for _, n := range got {
+		var gpu any
+		if len(n.GPUInfo) > 0 {
+			_ = json.Unmarshal(n.GPUInfo, &gpu)
+		}
+		out = append(out, nodeResp{
+			ID: n.ID.String(), Name: n.Name, Status: n.Status,
+			AgentVersion: n.AgentVersion, GPUInfo: gpu, LastSeenAt: n.LastSeenAt,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(out)
 }
