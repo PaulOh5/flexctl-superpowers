@@ -1,19 +1,25 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { useToast } from '@/hooks/use-toast'
+import { useQuery } from '@tanstack/react-query'
 import { api, ApiError } from '@/lib/api'
 
 export function Signup() {
+  const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false, staleTime: 60_000 })
   const [email, setEmail] = useState('')
   const [slug, setSlug] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const nav = useNavigate()
   const { toast } = useToast()
+
+  useEffect(() => {
+    if (me.data) nav('/', { replace: true })
+  }, [me.data, nav])
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()

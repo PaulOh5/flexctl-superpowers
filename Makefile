@@ -76,6 +76,8 @@ e2e-down:
 	docker compose -f docker-compose.e2e.yml down -v
 
 e2e: build-control-plane e2e-up
+	@pkill -f 'bin/control-plane' 2>/dev/null || true
+	@sleep 1
 	$(E2E_MIGRATE) -path ./migrations -database "$(E2E_DB_URL)" up
 	set -a; . ./.env.e2e; set +a; \
 	  ./bin/control-plane > /tmp/flex-e2e-cp.log 2>&1 & echo $$! > /tmp/flex-e2e-cp.pid; \
