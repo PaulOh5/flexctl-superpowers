@@ -248,6 +248,8 @@ type EnvsDispatcher struct {
 
 	headscaleClientURL string
 	sidecarImage       string
+
+	autoack bool
 }
 
 func NewEnvsDispatcher(srv *Server, headscaleClientURL, sidecarImage string) *EnvsDispatcher {
@@ -257,7 +259,31 @@ func NewEnvsDispatcher(srv *Server, headscaleClientURL, sidecarImage string) *En
 	}
 }
 
+// SetAutoack enables a dev/test-only short-circuit where Create/Start/Stop/
+// Delete bypass the agent gRPC stream entirely and apply terminal states
+// directly via envs.Service. NEVER enable in production — sidecar/dev
+// containers are not actually started.
+func (d *EnvsDispatcher) SetAutoack(on bool) { d.autoack = on }
+
+func (d *EnvsDispatcher) autoackCreate(ctx context.Context, envID uuid.UUID) error {
+	env, err := d.envs.ByID(ctx, envID)
+	if err != nil {
+		return err
+	}
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		_ = d.envs.MarkRunning(context.Background(), env.ID,
+			"autoack-sidecar-"+env.ID.String(),
+			"autoack-dev-"+env.ID.String(),
+			[]int{0})
+	}()
+	return nil
+}
+
 func (d *EnvsDispatcher) Create(ctx context.Context, envID uuid.UUID) error {
+	if d.autoack {
+		return d.autoackCreate(ctx, envID)
+	}
 	env, err := d.envs.ByID(ctx, envID)
 	if err != nil {
 		return err
@@ -308,6 +334,13 @@ func (d *EnvsDispatcher) Create(ctx context.Context, envID uuid.UUID) error {
 }
 
 func (d *EnvsDispatcher) Stop(ctx context.Context, envID uuid.UUID) error {
+	if d.autoack {
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			_ = d.envs.MarkStopped(context.Background(), envID)
+		}()
+		return nil
+	}
 	env, err := d.envs.ByID(ctx, envID)
 	if err != nil {
 		return err
@@ -322,6 +355,9 @@ func (d *EnvsDispatcher) Stop(ctx context.Context, envID uuid.UUID) error {
 }
 
 func (d *EnvsDispatcher) Start(ctx context.Context, envID uuid.UUID) error {
+	if d.autoack {
+		return d.autoackCreate(ctx, envID)
+	}
 	env, err := d.envs.ByID(ctx, envID)
 	if err != nil {
 		return err
@@ -357,6 +393,9 @@ func (d *EnvsDispatcher) Start(ctx context.Context, envID uuid.UUID) error {
 }
 
 func (d *EnvsDispatcher) Delete(ctx context.Context, envID uuid.UUID) error {
+	if d.autoack {
+		return d.envs.Delete(ctx, envID)
+	}
 	env, err := d.envs.ByID(ctx, envID)
 	if err != nil {
 		return err

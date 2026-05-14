@@ -38,6 +38,7 @@ type Node struct {
 	GPUInfo      []byte
 	Status       string
 	LastSeenAt   *time.Time
+	CreatedAt    time.Time
 }
 
 type PairRequest struct {
@@ -222,4 +223,24 @@ func (s *Service) MarkOffline(ctx context.Context, nodeID uuid.UUID) error {
 		return fmt.Errorf("mark offline: %w", err)
 	}
 	return nil
+}
+
+func (s *Service) ListByOwner(ctx context.Context, userID uuid.UUID) ([]Node, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, owner_user_id, name, agent_version, gpu_info, status, last_seen_at, created_at
+		FROM nodes WHERE owner_user_id = $1 ORDER BY created_at`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+	var out []Node
+	for rows.Next() {
+		var n Node
+		if err := rows.Scan(&n.ID, &n.OwnerUserID, &n.Name, &n.AgentVersion, &n.GPUInfo,
+			&n.Status, &n.LastSeenAt, &n.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
 }
